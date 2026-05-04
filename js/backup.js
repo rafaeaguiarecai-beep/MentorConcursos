@@ -10,10 +10,11 @@ const Backup = {
         topicos: await db.topicos.toArray(),
         sessoes: await db.sessoes.toArray(),
         revisoes: await db.revisoes.toArray(),
-        cicloConfig: await db.cicloConfig.toArray()
+        cicloConfig: await db.cicloConfig.toArray(),
+        questoes: await db.questoes.toArray()
       };
       const json = {
-        versao: '1.0',
+        versao: '2.0',
         dataExportacao: new Date().toISOString(),
         dados
       };
@@ -62,7 +63,6 @@ const Backup = {
         return { ok: true, metodo: 'share' };
       }
       if (navigator.share) {
-        // Fallback: compartilhar texto/url se arquivos não suportados
         const url = URL.createObjectURL(blob);
         await navigator.share({
           title: 'Backup MentorConcursos',
@@ -77,7 +77,6 @@ const Backup = {
       if (e?.name === 'AbortError') return { ok: false, cancelado: true };
       console.warn(e);
     }
-    // Fallback final - download direto
     await this.exportar();
     return { ok: true, metodo: 'download' };
   },
@@ -97,11 +96,10 @@ const Backup = {
 
   async importar(json, onProgress) {
     const dados = json?.dados ?? {};
-    const tabelas = ['concursos', 'disciplinas', 'topicos', 'sessoes', 'revisoes', 'cicloConfig'];
+    const tabelas = ['concursos', 'disciplinas', 'topicos', 'sessoes', 'revisoes', 'cicloConfig', 'questoes'];
     const total = tabelas.length;
     let feitas = 0;
 
-    // Limpar tudo primeiro
     for (const t of tabelas) {
       try { await db[t].clear(); } catch (e) { console.warn('clear', t, e); }
     }

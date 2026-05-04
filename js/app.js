@@ -1,4 +1,4 @@
-/* ====== MentorConcursos - Lógica Principal e SPA ====== */
+/* ====== MentorConcursos v2 - Lógica Principal e SPA ====== */
 
 const FRASES_MOTIVACIONAIS = [
   'Cada minuto investido hoje é um passo a mais rumo à aprovação.',
@@ -23,7 +23,7 @@ const FRASES_MOTIVACIONAIS = [
   'Concurso não premia o mais inteligente, e sim o mais persistente.'
 ];
 
-const CORES_PADRAO = ['#e94560', '#60B5FF', '#FF9149', '#FF9898', '#FF90BB', '#80D8C3', '#A19AD3', '#72BF78', '#fbbf24', '#4ade80'];
+const CORES_PADRAO = ['#e94560','#60B5FF','#FF9149','#FF9898','#FF90BB','#80D8C3','#A19AD3','#72BF78','#fbbf24','#4ade80'];
 
 /* ============ Toast ============ */
 const Toast = {
@@ -74,7 +74,6 @@ const Router = {
   ir(pagina, parametros = {}) {
     this.paginaAtual = pagina;
     this.parametros = parametros ?? {};
-    // Para timer ao mudar de página (exceto se ficar em estudar)
     if (pagina !== 'estudar' && Timer.rodando) {
       Timer.parar();
     }
@@ -86,7 +85,11 @@ const Router = {
     const nav = document.getElementById('bottom-nav');
     if (!nav) return;
     const itens = nav.querySelectorAll('.nav-item');
-    const mapaNav = { dashboard: 'dashboard', estudar: 'estudar', revisoes: 'revisoes', historico: 'historico', mais: 'mais', ciclo: 'mais', configuracoes: 'mais' };
+    const mapaNav = {
+      dashboard: 'dashboard', estudar: 'estudar', revisoes: 'revisoes',
+      historico: 'historico', mais: 'mais', ciclo: 'mais',
+      configuracoes: 'mais', questoes: 'questoes'
+    };
     const navAtiva = mapaNav[this.paginaAtual] ?? 'dashboard';
     itens.forEach(item => {
       item.classList.toggle('active', item.dataset.page === navAtiva);
@@ -98,14 +101,53 @@ window.Router = Router;
 /* ============ Helpers UI ============ */
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 window.escapeHtml = escapeHtml;
+
+/* Autocomplete simples reutilizável */
+function setupAutocomplete(inputId, getSuggestionsFn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const wrapperId = inputId + '-ac-wrap';
+  let wrap = document.getElementById(wrapperId);
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = wrapperId;
+    wrap.className = 'autocomplete-list';
+    input.parentElement.style.position = 'relative';
+    input.parentElement.appendChild(wrap);
+  }
+
+  const atualizar = async () => {
+    const val = (input.value ?? '').trim().toLowerCase();
+    if (val.length < 1) { wrap.innerHTML = ''; wrap.style.display = 'none'; return; }
+    const sugestoes = await getSuggestionsFn();
+    const filtradas = sugestoes.filter(s => s.toLowerCase().includes(val)).slice(0, 8);
+    if (filtradas.length === 0 || (filtradas.length === 1 && filtradas[0].toLowerCase() === val)) {
+      wrap.innerHTML = ''; wrap.style.display = 'none'; return;
+    }
+    wrap.style.display = 'block';
+    wrap.innerHTML = filtradas.map(s =>
+      `<div class="autocomplete-item">${escapeHtml(s)}</div>`
+    ).join('');
+    wrap.querySelectorAll('.autocomplete-item').forEach(item => {
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = item.textContent;
+        wrap.innerHTML = ''; wrap.style.display = 'none';
+        input.dispatchEvent(new Event('input'));
+      });
+    });
+  };
+
+  input.addEventListener('input', atualizar);
+  input.addEventListener('focus', atualizar);
+  input.addEventListener('blur', () => {
+    setTimeout(() => { wrap.innerHTML = ''; wrap.style.display = 'none'; }, 200);
+  });
+}
+window.setupAutocomplete = setupAutocomplete;
 
 async function atualizarBadgeRevisoes() {
   try {
@@ -159,13 +201,12 @@ const Paginas = {
           <p class="welcome-text">Organize seus estudos, faça revisões espaçadas e acompanhe seu progresso rumo à aprovação.</p>
           <button class="btn btn-primary" id="btn-setup">Configurar meu primeiro concurso</button>
         </div>`;
-      document.getElementById('btn-setup').addEventListener('click', () => abrirModalSetupConcurso());
+      document.getElementById('btn-setup')?.addEventListener('click', () => abrirModalSetupConcurso());
       return;
     }
 
     const sessoes = await Sessoes.listar(concurso.id);
     const totalSeg = (sessoes ?? []).reduce((acc, s) => acc + (s?.duracaoSegundos ?? 0), 0);
-    const totalHoras = totalSeg / 3600;
     const numSessoes = sessoes?.length ?? 0;
     const paraHoje = await Revisoes.paraHoje(concurso.id);
     const atrasadas = await Revisoes.atrasadas(concurso.id);
@@ -175,20 +216,21 @@ const Paginas = {
     const mapaDisc = {};
     for (const d of disciplinas ?? []) mapaDisc[d.id] = d;
 
-    // Termometro
-    let term = 0;
-    let termClasse = 'thermometer-low';
-    let termLabel = 'Acelere o ritmo!';
-    if (concurso.dataProva) {
-      const diasRest = Math.max(0, DataUtil.diasEntre(new Date(), new Date(concurso.dataProva)));
-      const horasNec = diasRest * (concurso?.horasDiarias ?? 4);
-      if (horasNec > 0) {
-        term = Math.min(100, (totalHoras / horasNec) * 100);
-      } else {
-        term = 100;
-      }
-      if (term >= 80) { termClasse = 'thermometer-high'; termLabel = 'Excelente! Continue assim'; }
-      else if (term >= 50) { termClasse = 'thermometer-mid'; termLabel = 'No ritmo, mas pode melhorar'; }
+    // Distribuição de tempo
+    const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
+
+    // Estatísticas de questões
+    const statsQuestoes = await Questoes.estatisticasPorDisciplina(concurso.id);
+
+    // Alertas eliminatórias
+    const alertasEliminatorias = [];
+    for (const d of disciplinas ?? []) {
+      if (!d.eliminatoria) continue;
+      const info = DistribuicaoEstudo.calcularMinimoEliminatoria(d);
+      if (!info) continue;
+      const stats = statsQuestoes[d.id];
+      const taxa = stats ? Questoes.taxaAcerto(stats) : null;
+      alertasEliminatorias.push({ disciplina: d, info, taxa, stats });
     }
 
     const precisaBackup = Backup.precisaLembrar();
@@ -204,7 +246,7 @@ const Paginas = {
       <div class="banner" id="banner-backup">
         <div class="banner-icon">⚠️</div>
         <div class="banner-content">
-          <strong>${dias === null ? 'Você ainda não fez backup' : `Você não faz backup há ${dias} dias`}</strong>
+          <strong>${dias === null ? 'Você ainda não fez backup' : `Backup há ${dias} dias`}</strong>
           Proteja seus dados!
         </div>
         <button class="btn btn-sm btn-primary" id="banner-export">Exportar</button>
@@ -235,12 +277,37 @@ const Paginas = {
         </div>
       </div>
 
+      ${alertasEliminatorias.length > 0 ? `
       <div class="card">
-        <div class="card-title">Termômetro de aprovação</div>
-        <div class="thermometer">
-          <div class="thermometer-bar"><div class="thermometer-fill ${termClasse}" style="width:${term.toFixed(1)}%"></div></div>
-          <div class="thermometer-label"><span>${term.toFixed(0)}% da meta</span><span>${termLabel}</span></div>
-        </div>
+        <div class="card-title">⚠️ Alertas Eliminatórias</div>
+        ${alertasEliminatorias.map(a => {
+          const corStatus = a.taxa !== null ? (a.taxa >= a.info.percentual ? 'text-success' : 'text-danger') : 'text-dim';
+          return `<div class="eliminatoria-alerta">
+            <span class="color-dot" style="background-color:${escapeHtml(a.disciplina.cor)}"></span>
+            <div class="item-content">
+              <div class="item-title">${escapeHtml(a.disciplina.nome)}</div>
+              <div class="item-subtitle">Mínimo: ${a.info.minimoQuestoes}/${a.info.totalQuestoes} questões (${a.info.percentual}%)
+              ${a.taxa !== null ? ` · Sua taxa: <span class="${corStatus}">${a.taxa.toFixed(0)}%</span> (${a.stats.total} questões)` : ' · Sem dados de questões ainda'}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+
+      <div class="card">
+        <div class="card-title">Distribuição ideal de tempo</div>
+        ${distribuicao.map(d => {
+          const pct = (d.proporcao * 100).toFixed(0);
+          const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.disciplina.grauConhecimento] ?? '';
+          return `<div class="distribuicao-item">
+            <div class="distribuicao-header">
+              <span class="color-dot" style="background-color:${escapeHtml(d.disciplina.cor)}"></span>
+              <span class="distribuicao-nome">${escapeHtml(d.disciplina.nome)}</span>
+              <span class="distribuicao-tempo">${TempoUtil.formatarHhMm(d.segundosSugeridos)} (${pct}%)</span>
+            </div>
+            <div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%;background-color:${escapeHtml(d.disciplina.cor)}"></div></div>
+            <div class="distribuicao-detalhe">${d.disciplina.numQuestoes ?? 0}q × peso ${d.disciplina.pesoQuestao ?? 1} = ${d.pontosMax}pts · ${grauLabel}</div>
+          </div>`;
+        }).join('')}
       </div>
 
       <div class="card">
@@ -292,11 +359,7 @@ const Paginas = {
       const grid = document.getElementById('countdown-grid');
       const status = document.getElementById('countdown-status');
       if (!grid || !status) return;
-      if (diff <= 0) {
-        status.textContent = 'Prova já ocorreu';
-        grid.innerHTML = '';
-        return;
-      }
+      if (diff <= 0) { status.textContent = 'Prova já ocorreu'; grid.innerHTML = ''; return; }
       const d = Math.floor(diff / 86400000);
       const h = Math.floor((diff % 86400000) / 3600000);
       const m = Math.floor((diff % 3600000) / 60000);
@@ -306,8 +369,7 @@ const Paginas = {
         <div class="countdown-unit"><span class="countdown-value">${d}</span><span class="countdown-label">Dias</span></div>
         <div class="countdown-unit"><span class="countdown-value">${h}</span><span class="countdown-label">Horas</span></div>
         <div class="countdown-unit"><span class="countdown-value">${m}</span><span class="countdown-label">Min</span></div>
-        <div class="countdown-unit"><span class="countdown-value">${s}</span><span class="countdown-label">Seg</span></div>
-      `;
+        <div class="countdown-unit"><span class="countdown-value">${s}</span><span class="countdown-label">Seg</span></div>`;
     };
     atualizarCountdown();
     if (window.__countdownInt) clearInterval(window.__countdownInt);
@@ -332,7 +394,6 @@ const Paginas = {
       return;
     }
 
-    // Disciplina sugerida (do ciclo)
     const cfg = await Ciclo.obter(concurso.id);
     let disciplinaSugeridaId = null;
     if (cfg && cfg?.cicloJSON) {
@@ -344,7 +405,6 @@ const Paginas = {
     }
     if (!disciplinaSugeridaId) disciplinaSugeridaId = disciplinas[0]?.id;
 
-    // Pre-preench: pode vir da pag de revisões
     const params = Router.parametros ?? {};
     if (params?.disciplinaId) disciplinaSugeridaId = params.disciplinaId;
     const tipoPre = params?.tipo ?? 'Novo';
@@ -352,7 +412,12 @@ const Paginas = {
 
     let disciplinaSelId = disciplinaSugeridaId;
     let tipoSelecionado = tipoPre;
-    Router.parametros = {}; // limpar para não repetir
+    Router.parametros = {};
+
+    // Tempo sugerido pela distribuição
+    const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
+    const distDisc = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
+    const minutosSugeridos = distDisc ? Math.max(5, Math.round(distDisc.segundosSugeridos / 60)) : 45;
 
     main.innerHTML = `
       <div class="page-header">
@@ -371,25 +436,25 @@ const Paginas = {
 
       <div class="form-group">
         <label>Tópico estudado</label>
-        <input type="text" id="in-topico" placeholder="Ex: Lei 8112 - Posse e exercício" value="${escapeHtml(topicoPre)}" />
+        <input type="text" id="in-topico" placeholder="Ex: Lei 8112 - Posse e exercício" value="${escapeHtml(topicoPre)}" autocomplete="off" />
       </div>
 
       <div class="form-group">
         <label>Tipo</label>
         <div class="pill-group" id="pills-tipo">
-          ${['Novo', 'Revisão 1', 'Revisão 2', 'Revisão 3', 'Questões'].map(t => `<button class="pill ${t === tipoSelecionado ? 'active' : ''}" data-tipo="${t}">${t}</button>`).join('')}
+          ${['Novo','Revisão 1','Revisão 2','Revisão 3','Questões'].map(t => `<button class="pill ${t === tipoSelecionado ? 'active' : ''}" data-tipo="${t}">${t}</button>`).join('')}
         </div>
       </div>
 
       <div class="timer-edit">
         <button class="btn-icon" id="btn-menos5">-5min</button>
-        <input type="number" id="in-duracao" min="1" max="600" value="45" />
+        <input type="number" id="in-duracao" min="1" max="600" value="${minutosSugeridos}" />
         <span class="text-dim">min</span>
         <button class="btn-icon" id="btn-mais5">+5min</button>
       </div>
 
       <div class="timer-presets">
-        ${[25, 30, 45, 60].map(m => `<button class="timer-preset" data-min="${m}">${m}min</button>`).join('')}
+        ${[25,30,45,60].map(m => `<button class="timer-preset" data-min="${m}">${m}min</button>`).join('')}
       </div>
 
       <div class="timer-container">
@@ -399,7 +464,7 @@ const Paginas = {
             <circle class="timer-progress" id="timer-progress" cx="100" cy="100" r="92" stroke-dasharray="578" stroke-dashoffset="0"></circle>
           </svg>
           <div class="timer-display">
-            <div class="timer-time" id="timer-time">45:00</div>
+            <div class="timer-time" id="timer-time">${TempoUtil.formatarMmSs(minutosSugeridos * 60)}</div>
             <div class="timer-state" id="timer-state">Pronto</div>
           </div>
         </div>
@@ -413,23 +478,39 @@ const Paginas = {
       </div>
     `;
 
-    const elCardDisc = () => document.getElementById('card-disciplina-atual');
     const renderCardDisc = () => {
       const d = disciplinas.find(x => x.id === disciplinaSelId) ?? disciplinas[0];
-      const card = elCardDisc();
+      const card = document.getElementById('card-disciplina-atual');
       if (!card || !d) return;
+      const dist = distribuicao.find(x => x.disciplina.id === d.id);
+      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? '';
       card.style.backgroundColor = d?.cor ?? '#e94560';
       card.innerHTML = `
         <div class="estudar-discipline-label">Próxima no ciclo</div>
         <div class="estudar-discipline-name">${escapeHtml(d?.nome ?? '-')}</div>
+        <div class="estudar-discipline-label" style="margin-top:4px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) + '/dia' : ''}</div>
       `;
     };
     renderCardDisc();
+
+    // Autocomplete de tópicos
+    setupAutocomplete('in-topico', async () => {
+      return await Questoes.topicosUsados(disciplinaSelId);
+    });
 
     const sel = document.getElementById('sel-disciplina');
     sel?.addEventListener('change', () => {
       disciplinaSelId = parseInt(sel.value);
       renderCardDisc();
+      // Atualizar timer com tempo sugerido da nova disciplina
+      const novaDist = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
+      if (novaDist && !Timer.rodando && !Timer.pausado) {
+        const novosMin = Math.max(5, Math.round(novaDist.segundosSugeridos / 60));
+        const inDur = document.getElementById('in-duracao');
+        if (inDur) inDur.value = novosMin;
+        Timer.setDuracao(novosMin);
+        atualizarUITimer();
+      }
     });
 
     document.querySelectorAll('#pills-tipo .pill').forEach(p => {
@@ -440,17 +521,14 @@ const Paginas = {
       });
     });
 
-    // Notificações: pedir permissão
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission?.().catch(() => {});
     }
 
-    /* ===== Timer integration ===== */
+    /* Timer integration */
     Timer.off('tick'); Timer.off('iniciar'); Timer.off('pausar'); Timer.off('retomar'); Timer.off('reset');
 
     const inDur = document.getElementById('in-duracao');
-    const btnMenos = document.getElementById('btn-menos5');
-    const btnMais = document.getElementById('btn-mais5');
     const btnIniciar = document.getElementById('btn-iniciar');
     const btnResetar = document.getElementById('btn-resetar');
     const btnFinalizar = document.getElementById('btn-finalizar');
@@ -459,33 +537,24 @@ const Paginas = {
     const elState = document.getElementById('timer-state');
     const elProg = document.getElementById('timer-progress');
 
-    Timer.init(parseInt(inDur?.value) || 45);
+    Timer.init(parseInt(inDur?.value) || minutosSugeridos);
 
     inDur?.addEventListener('input', () => {
       const v = parseInt(inDur.value);
       if (Timer.setDuracao(v)) atualizarUITimer();
     });
 
-    btnMenos?.addEventListener('click', () => {
-      if (Timer.ajustar(-5)) {
-        if (inDur) inDur.value = Timer.duracaoInicial / 60;
-        atualizarUITimer();
-      }
+    document.getElementById('btn-menos5')?.addEventListener('click', () => {
+      if (Timer.ajustar(-5)) { if (inDur) inDur.value = Timer.duracaoInicial / 60; atualizarUITimer(); }
     });
-    btnMais?.addEventListener('click', () => {
-      if (Timer.ajustar(5)) {
-        if (inDur) inDur.value = Timer.duracaoInicial / 60;
-        atualizarUITimer();
-      }
+    document.getElementById('btn-mais5')?.addEventListener('click', () => {
+      if (Timer.ajustar(5)) { if (inDur) inDur.value = Timer.duracaoInicial / 60; atualizarUITimer(); }
     });
 
     document.querySelectorAll('.timer-preset').forEach(b => {
       b.addEventListener('click', () => {
         const m = parseInt(b.dataset.min);
-        if (Timer.setDuracao(m)) {
-          if (inDur) inDur.value = m;
-          atualizarUITimer();
-        }
+        if (Timer.setDuracao(m)) { if (inDur) inDur.value = m; atualizarUITimer(); }
       });
     });
 
@@ -494,38 +563,22 @@ const Paginas = {
       const total = e.duracaoInicial;
       const r = e.restante;
       const ex = e.extra;
-      const circ = 578; // ~ 2*PI*92
-
+      const circ = 578;
       if (ex > 0) {
         elTime.textContent = '+' + TempoUtil.formatarMmSs(ex);
-        elTime.classList.add('extra');
-        elProg.classList.add('extra');
+        elTime.classList.add('extra'); elProg.classList.add('extra');
         elProg.setAttribute('stroke-dashoffset', '0');
       } else {
         elTime.textContent = TempoUtil.formatarMmSs(r);
-        elTime.classList.remove('extra');
-        elProg.classList.remove('extra');
-        const offset = circ * (1 - r / total);
-        elProg.setAttribute('stroke-dashoffset', String(offset));
+        elTime.classList.remove('extra'); elProg.classList.remove('extra');
+        elProg.setAttribute('stroke-dashoffset', String(circ * (1 - r / total)));
       }
-
-      if (e.rodando) {
-        elState.textContent = 'Em foco';
-        btnIniciar.textContent = 'PAUSAR';
-        btnIniciar.classList.add('paused');
-      } else if (e.pausado) {
-        elState.textContent = 'Pausado';
-        btnIniciar.textContent = 'RETOMAR';
-        btnIniciar.classList.remove('paused');
-      } else {
-        elState.textContent = 'Pronto';
-        btnIniciar.textContent = 'INICIAR';
-        btnIniciar.classList.remove('paused');
-      }
+      if (e.rodando) { elState.textContent = 'Em foco'; btnIniciar.textContent = 'PAUSAR'; btnIniciar.classList.add('paused'); }
+      else if (e.pausado) { elState.textContent = 'Pausado'; btnIniciar.textContent = 'RETOMAR'; btnIniciar.classList.remove('paused'); }
+      else { elState.textContent = 'Pronto'; btnIniciar.textContent = 'INICIAR'; btnIniciar.classList.remove('paused'); }
       controlesExtras.style.display = (e.rodando || e.pausado || e.totalDecorrido > 0) ? 'flex' : 'none';
     }
     atualizarUITimer();
-
     Timer.on('tick', atualizarUITimer);
     Timer.on('iniciar', atualizarUITimer);
     Timer.on('pausar', atualizarUITimer);
@@ -533,12 +586,8 @@ const Paginas = {
     Timer.on('reset', atualizarUITimer);
 
     btnIniciar?.addEventListener('click', () => {
-      // Inicializar audio context com gesto do usuário
       try {
-        if (!Timer.audioCtx) {
-          const Ctx = window.AudioContext || window.webkitAudioContext;
-          if (Ctx) Timer.audioCtx = new Ctx();
-        }
+        if (!Timer.audioCtx) { const Ctx = window.AudioContext || window.webkitAudioContext; if (Ctx) Timer.audioCtx = new Ctx(); }
         if (Timer.audioCtx?.state === 'suspended') Timer.audioCtx.resume?.();
       } catch (e) {}
       const e = Timer.estado();
@@ -547,42 +596,27 @@ const Paginas = {
       else Timer.iniciar();
     });
 
-    btnResetar?.addEventListener('click', () => {
-      Timer.resetar();
-    });
+    btnResetar?.addEventListener('click', () => Timer.resetar());
 
     btnFinalizar?.addEventListener('click', () => {
       const topico = document.getElementById('in-topico')?.value?.trim() ?? '';
-      if (!topico) {
-        Toast.aviso('Informe o tópico estudado.');
-        return;
-      }
+      if (!topico) { Toast.aviso('Informe o tópico estudado.'); return; }
       const e = Timer.estado();
-      if ((e.totalDecorrido ?? 0) < 1) {
-        Toast.aviso('Inicie o timer antes de finalizar.');
-        return;
-      }
+      if ((e.totalDecorrido ?? 0) < 1) { Toast.aviso('Inicie o timer antes de finalizar.'); return; }
       Timer.parar();
       abrirModalFinalizar({
-        concursoId: concurso.id,
-        disciplinaId: disciplinaSelId,
-        topico,
-        tipo: tipoSelecionado,
-        duracaoSegundos: e.totalDecorrido,
-        iniciadoEm: e.iniciadoEm
+        concursoId: concurso.id, disciplinaId: disciplinaSelId, topico,
+        tipo: tipoSelecionado, duracaoSegundos: e.totalDecorrido, iniciadoEm: e.iniciadoEm
       });
     });
   }
 };
 window.Paginas = Paginas;
 
-/* ===== REVIS\u00d5ES ===== */
+/* ===== REVISÕES ===== */
 Paginas.revisoes = async function(main) {
   const concurso = await Concursos.ativo();
-  if (!concurso) {
-    main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\ud83c\udfaf</div><div class="empty-state-text">Configure um concurso primeiro</div></div>';
-    return;
-  }
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
   const todas = await Revisoes.listar(concurso.id);
   const pendentes = (todas ?? []).filter(r => r?.status === 'pendente');
   const disciplinas = await Disciplinas.listar(concurso.id);
@@ -591,7 +625,6 @@ Paginas.revisoes = async function(main) {
 
   const filtroAtual = Router.parametros?.filtro ?? 'hoje';
   Router.parametros = {};
-
   const hoje = DataUtil.hoje();
   const fimHoje = DataUtil.fimDia(hoje);
   const em7Dias = DataUtil.fimDia(DataUtil.adicionarDias(hoje, 7));
@@ -600,42 +633,38 @@ Paginas.revisoes = async function(main) {
     hoje: r => r?.status === 'pendente' && new Date(r?.dataPrevista) <= fimHoje,
     atrasadas: r => r?.status === 'pendente' && new Date(r?.dataPrevista) < hoje,
     proximos7: r => r?.status === 'pendente' && new Date(r?.dataPrevista) >= hoje && new Date(r?.dataPrevista) <= em7Dias,
-    todas: r => true
+    todas: () => true
   };
 
   main.innerHTML = `
     <div class="page-header">
-      <h1 class="page-title">Revis\u00f5es</h1>
+      <h1 class="page-title">Revisões</h1>
       <p class="page-subtitle">${pendentes.length} pendente${pendentes.length !== 1 ? 's' : ''}</p>
     </div>
     <div class="tabs">
       <button class="tab ${filtroAtual === 'hoje' ? 'active' : ''}" data-filtro="hoje">Hoje</button>
       <button class="tab ${filtroAtual === 'atrasadas' ? 'active' : ''}" data-filtro="atrasadas">Atrasadas</button>
-      <button class="tab ${filtroAtual === 'proximos7' ? 'active' : ''}" data-filtro="proximos7">Pr\u00f3ximos 7 dias</button>
+      <button class="tab ${filtroAtual === 'proximos7' ? 'active' : ''}" data-filtro="proximos7">Próximos 7 dias</button>
       <button class="tab ${filtroAtual === 'todas' ? 'active' : ''}" data-filtro="todas">Todas</button>
     </div>
-    <div id="lista-revisoes"></div>
-  `;
+    <div id="lista-revisoes"></div>`;
 
   function renderLista(filtro) {
     const cont = document.getElementById('lista-revisoes');
     if (!cont) return;
     const lista = (todas ?? []).filter(filtros[filtro] ?? filtros.hoje);
-    if (lista.length === 0) {
-      cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\u2728</div><div class="empty-state-text">Nenhuma revis\u00e3o nesta categoria.</div></div>';
-      return;
-    }
+    if (lista.length === 0) { cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">✨</div><div class="empty-state-text">Nenhuma revisão nesta categoria.</div></div>'; return; }
     cont.innerHTML = lista.map(r => {
       const d = mapaDisc[r?.disciplinaId];
       const data = new Date(r?.dataPrevista);
       const atrasada = r?.status === 'pendente' && data < hoje;
-      const tipoMap = { 'R1': 'Revis\u00e3o 1', 'R2': 'Revis\u00e3o 2', 'R3': 'Revis\u00e3o 3' };
-      const tipoCompleto = tipoMap[r?.tipoRevisao] ?? 'Revis\u00e3o';
+      const tipoMap = { 'R1': 'Revisão 1', 'R2': 'Revisão 2', 'R3': 'Revisão 3' };
+      const tipoCompleto = tipoMap[r?.tipoRevisao] ?? 'Revisão';
       return `<div class="review-item ${atrasada ? 'overdue' : ''}" data-id="${r.id}" data-disc="${r?.disciplinaId}" data-topico="${escapeHtml(r?.topico ?? '')}" data-tipo="${tipoCompleto}" data-status="${r?.status}">
         <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d?.cor ?? '#e94560')}"></span>
         <div class="item-content">
           <div class="item-title">${escapeHtml(r?.topico ?? '-')}</div>
-          <div class="item-subtitle">${escapeHtml(d?.nome ?? '-')} \u00b7 <span class="review-type-badge">${escapeHtml(r?.tipoRevisao ?? '')}</span> ${atrasada ? '\u00b7 \u26a0\ufe0f atrasada' : ''} ${r?.status === 'feita' ? '\u00b7 \u2713 feita' : ''}</div>
+          <div class="item-subtitle">${escapeHtml(d?.nome ?? '-')} · <span class="review-type-badge">${escapeHtml(r?.tipoRevisao ?? '')}</span> ${atrasada ? '· ⚠️ atrasada' : ''} ${r?.status === 'feita' ? '· ✓ feita' : ''}</div>
         </div>
         <div class="item-meta">${DataUtil.formatarData(r?.dataPrevista)}</div>
       </div>`;
@@ -643,10 +672,7 @@ Paginas.revisoes = async function(main) {
     cont.querySelectorAll('.review-item').forEach(el => {
       el.addEventListener('click', () => {
         if (el.dataset.status === 'feita') return;
-        const did = parseInt(el.dataset.disc);
-        const topico = el.dataset.topico;
-        const tipo = el.dataset.tipo;
-        Router.ir('estudar', { disciplinaId: did, topico, tipo });
+        Router.ir('estudar', { disciplinaId: parseInt(el.dataset.disc), topico: el.dataset.topico, tipo: el.dataset.tipo });
       });
     });
   }
@@ -660,13 +686,10 @@ Paginas.revisoes = async function(main) {
   });
 };
 
-/* ===== HIST\u00d3RICO ===== */
+/* ===== HISTÓRICO ===== */
 Paginas.historico = async function(main) {
   const concurso = await Concursos.ativo();
-  if (!concurso) {
-    main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\ud83c\udfaf</div><div class="empty-state-text">Configure um concurso primeiro</div></div>';
-    return;
-  }
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
   const sessoes = await Sessoes.listar(concurso.id);
   const disciplinas = await Disciplinas.listar(concurso.id);
   const mapaDisc = {};
@@ -677,15 +700,13 @@ Paginas.historico = async function(main) {
 
   main.innerHTML = `
     <div class="page-header">
-      <h1 class="page-title">Hist\u00f3rico</h1>
-      <p class="page-subtitle">${sessoes?.length ?? 0} sess\u00f5es</p>
+      <h1 class="page-title">Histórico</h1>
+      <p class="page-subtitle">${sessoes?.length ?? 0} sessões</p>
     </div>
-
     <div class="card">
-      <div class="card-title">Horas por semana (\u00faltimas 8)</div>
+      <div class="card-title">Horas por semana (últimas 8)</div>
       <div class="chart-container"><canvas id="chart-historico"></canvas></div>
     </div>
-
     <div class="form-group">
       <label>Filtrar por disciplina</label>
       <select id="filtro-disciplina">
@@ -694,45 +715,26 @@ Paginas.historico = async function(main) {
       </select>
     </div>
     <div class="form-group">
-      <label>Filtrar por per\u00edodo</label>
+      <label>Filtrar por período</label>
       <select id="filtro-periodo">
         <option value="todas">Todas</option>
-        <option value="semana">\u00daltima semana</option>
-        <option value="mes">\u00daltimo m\u00eas</option>
+        <option value="semana">Última semana</option>
+        <option value="mes">Último mês</option>
       </select>
     </div>
-
-    <div id="lista-historico"></div>
-  `;
+    <div id="lista-historico"></div>`;
 
   function renderHistorico() {
     const cont = document.getElementById('lista-historico');
     if (!cont) return;
     let lista = sessoes ?? [];
-    if (filtroDisc !== 'todas') {
-      lista = lista.filter(s => String(s?.disciplinaId) === String(filtroDisc));
-    }
-    if (filtroPeriodo === 'semana') {
-      const limite = DataUtil.adicionarDias(new Date(), -7);
-      lista = lista.filter(s => new Date(s?.data) >= limite);
-    } else if (filtroPeriodo === 'mes') {
-      const limite = DataUtil.adicionarDias(new Date(), -30);
-      lista = lista.filter(s => new Date(s?.data) >= limite);
-    }
+    if (filtroDisc !== 'todas') lista = lista.filter(s => String(s?.disciplinaId) === String(filtroDisc));
+    if (filtroPeriodo === 'semana') { const lim = DataUtil.adicionarDias(new Date(), -7); lista = lista.filter(s => new Date(s?.data) >= lim); }
+    else if (filtroPeriodo === 'mes') { const lim = DataUtil.adicionarDias(new Date(), -30); lista = lista.filter(s => new Date(s?.data) >= lim); }
+    if (lista.length === 0) { cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">📝</div><div class="empty-state-text">Nenhuma sessão registrada ainda.</div></div>'; return; }
 
-    if (lista.length === 0) {
-      cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\ud83d\udcdd</div><div class="empty-state-text">Nenhuma sess\u00e3o registrada ainda.</div></div>';
-      return;
-    }
-
-    // Agrupar por dia
     const grupos = {};
-    for (const s of lista) {
-      const d = new Date(s?.data ?? 0);
-      const chave = DataUtil.inicioDia(d).toISOString();
-      if (!grupos[chave]) grupos[chave] = [];
-      grupos[chave].push(s);
-    }
+    for (const s of lista) { const d = new Date(s?.data ?? 0); const chave = DataUtil.inicioDia(d).toISOString(); if (!grupos[chave]) grupos[chave] = []; grupos[chave].push(s); }
     const chaves = Object.keys(grupos).sort((a, b) => new Date(b) - new Date(a));
     const hoje = DataUtil.hoje();
     const ontem = DataUtil.adicionarDias(hoje, -1);
@@ -745,19 +747,17 @@ Paginas.historico = async function(main) {
       let label = DataUtil.formatarData(dataGrupo);
       if (dataGrupo.getTime() === hoje.getTime()) label = 'Hoje';
       else if (dataGrupo.getTime() === ontem.getTime()) label = 'Ontem';
-
-      html += `<div class="history-day-header">${label} <span class="history-day-total">\u00b7 ${TempoUtil.formatarHhMm(totalSegDia)} \u00b7 ${grupo.length} sess\u00e3o${grupo.length !== 1 ? 'es' : ''}</span></div>`;
-
+      html += `<div class="history-day-header">${label} <span class="history-day-total">· ${TempoUtil.formatarHhMm(totalSegDia)} · ${grupo.length} sessão${grupo.length !== 1 ? 'es' : ''}</span></div>`;
       for (const s of grupo) {
         const d = mapaDisc[s?.disciplinaId];
-        const tipoIcons = { 'Novo': '\ud83d\udcd7', 'Revis\u00e3o 1': '\ud83d\udd04', 'Revis\u00e3o 2': '\ud83d\udd04', 'Revis\u00e3o 3': '\ud83d\udd04', 'Quest\u00f5es': '\ud83d\udcdd' };
-        const icon = tipoIcons[s?.tipo] ?? '\ud83d\udcd6';
-        const stars = '\u2605'.repeat(s?.avaliacao ?? 0) + '\u2606'.repeat(5 - (s?.avaliacao ?? 0));
+        const tipoIcons = { 'Novo': '📗', 'Revisão 1': '🔄', 'Revisão 2': '🔄', 'Revisão 3': '🔄', 'Questões': '📝' };
+        const icon = tipoIcons[s?.tipo] ?? '📖';
+        const stars = '★'.repeat(s?.avaliacao ?? 0) + '☆'.repeat(5 - (s?.avaliacao ?? 0));
         html += `<div class="session-item">
           <span style="font-size:20px;">${icon}</span>
           <div class="item-content">
             <div class="item-title">${escapeHtml(s?.topico ?? '-')}</div>
-            <div class="item-subtitle"><span class="color-dot" style="background-color:${escapeHtml(d?.cor ?? '#e94560')};display:inline-block;margin-right:6px;vertical-align:middle;"></span>${escapeHtml(d?.nome ?? '-')} \u00b7 ${escapeHtml(s?.tipo ?? '-')} \u00b7 ${TempoUtil.formatarHhMm(s?.duracaoSegundos)}</div>
+            <div class="item-subtitle"><span class="color-dot" style="background-color:${escapeHtml(d?.cor ?? '#e94560')};display:inline-block;margin-right:6px;vertical-align:middle;"></span>${escapeHtml(d?.nome ?? '-')} · ${escapeHtml(s?.tipo ?? '-')} · ${TempoUtil.formatarHhMm(s?.duracaoSegundos)}</div>
             ${(s?.avaliacao ?? 0) > 0 ? `<div class="session-rating">${stars}</div>` : ''}
             ${s?.notas ? `<div class="item-subtitle" style="margin-top:4px;font-style:italic;">"${escapeHtml(s.notas)}"</div>` : ''}
           </div>
@@ -766,631 +766,708 @@ Paginas.historico = async function(main) {
     }
     cont.innerHTML = html;
   }
-
-  document.getElementById('filtro-disciplina')?.addEventListener('change', (e) => {
-    filtroDisc = e.target.value;
-    renderHistorico();
-  });
-  document.getElementById('filtro-periodo')?.addEventListener('change', (e) => {
-    filtroPeriodo = e.target.value;
-    renderHistorico();
-  });
-
+  document.getElementById('filtro-disciplina')?.addEventListener('change', (e) => { filtroDisc = e.target.value; renderHistorico(); });
+  document.getElementById('filtro-periodo')?.addEventListener('change', (e) => { filtroPeriodo = e.target.value; renderHistorico(); });
   renderHistorico();
   setTimeout(() => Graficos.linhaSemanasHistorico('chart-historico', concurso.id), 50);
+};
+
+/* ===== QUESTÕES ===== */
+Paginas.questoes = async function(main) {
+  const concurso = await Concursos.ativo();
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
+  const disciplinas = await Disciplinas.listar(concurso.id);
+  if (!disciplinas || disciplinas.length === 0) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">📚</div><div class="empty-state-text">Adicione disciplinas em Configurações</div></div>'; return; }
+  const mapaDisc = {};
+  for (const d of disciplinas) mapaDisc[d.id] = d;
+
+  const statsGeral = await Questoes.estatisticasPorDisciplina(concurso.id);
+  const todasQuestoes = await Questoes.listar(concurso.id);
+
+  let discSel = disciplinas[0]?.id;
+  let tabAtiva = 'registrar';
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Questões</h1>
+      <p class="page-subtitle">${todasQuestoes.length} questões registradas</p>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="registrar">Registrar</button>
+      <button class="tab" data-tab="estatisticas">Estatísticas</button>
+      <button class="tab" data-tab="historico-q">Histórico</button>
+    </div>
+    <div id="tab-content"></div>`;
+
+  function renderTab(tab) {
+    tabAtiva = tab;
+    const cont = document.getElementById('tab-content');
+    if (!cont) return;
+    if (tab === 'registrar') renderRegistrar(cont);
+    else if (tab === 'estatisticas') renderEstatisticas(cont);
+    else if (tab === 'historico-q') renderHistoricoQ(cont);
+  }
+
+  function renderRegistrar(cont) {
+    cont.innerHTML = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Registrar questão</div>
+        <div class="form-group">
+          <label>Disciplina</label>
+          <select id="q-disciplina">
+            ${disciplinas.map(d => `<option value="${d.id}" ${d.id === discSel ? 'selected' : ''}>${escapeHtml(d.nome)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Tópico / Assunto</label>
+          <input type="text" id="q-topico" placeholder="Ex: Princípios orçamentários" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label>Origem (banca / concurso)</label>
+          <input type="text" id="q-origem" placeholder="Ex: CESPE - PF 2021" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label>Resultado</label>
+          <div class="resultado-grid">
+            <button class="resultado-btn acertou" data-resultado="acertou">
+              <span class="resultado-icon">✅</span>
+              <span class="resultado-label">Acertou</span>
+            </button>
+            <button class="resultado-btn acertou-duvida" data-resultado="acertou_duvida">
+              <span class="resultado-icon">🟡</span>
+              <span class="resultado-label">Acertou com dúvida</span>
+            </button>
+            <button class="resultado-btn errou" data-resultado="errou">
+              <span class="resultado-icon">❌</span>
+              <span class="resultado-label">Errou</span>
+            </button>
+            <button class="resultado-btn errou-desatencao" data-resultado="errou_desatencao">
+              <span class="resultado-icon">⚠️</span>
+              <span class="resultado-label">Errou por desatenção</span>
+            </button>
+          </div>
+        </div>
+        <div id="q-feedback" style="display:none;"></div>
+        <div id="q-contador" class="text-dim text-center mt-12"></div>
+      </div>`;
+
+    let contadorSessao = 0;
+
+    // Autocomplete tópico
+    setupAutocomplete('q-topico', async () => {
+      const selVal = parseInt(document.getElementById('q-disciplina')?.value);
+      return await Questoes.topicosUsados(selVal);
+    });
+
+    // Autocomplete origem
+    setupAutocomplete('q-origem', async () => {
+      return await Questoes.origensUsadas(concurso.id);
+    });
+
+    document.getElementById('q-disciplina')?.addEventListener('change', (e) => {
+      discSel = parseInt(e.target.value);
+    });
+
+    cont.querySelectorAll('.resultado-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const topico = document.getElementById('q-topico')?.value?.trim();
+        const origem = document.getElementById('q-origem')?.value?.trim();
+        const resultado = btn.dataset.resultado;
+
+        if (!topico) { Toast.aviso('Informe o tópico da questão.'); return; }
+
+        try {
+          await Questoes.criar({
+            concursoId: concurso.id,
+            disciplinaId: discSel,
+            topico,
+            origem: origem ?? '',
+            resultado
+          });
+
+          contadorSessao++;
+          const feedback = document.getElementById('q-feedback');
+          const labelRes = Questoes.LABELS_RESULTADO[resultado] ?? resultado;
+          const iconeRes = Questoes.ICONES_RESULTADO[resultado] ?? '';
+          if (feedback) {
+            feedback.style.display = 'block';
+            feedback.className = `q-feedback q-feedback-${resultado}`;
+            feedback.innerHTML = `${iconeRes} ${escapeHtml(labelRes)} — <strong>${escapeHtml(topico)}</strong>`;
+            setTimeout(() => { if (feedback) feedback.style.display = 'none'; }, 2500);
+          }
+          document.getElementById('q-contador').textContent = `${contadorSessao} questão${contadorSessao !== 1 ? 'ões' : ''} registrada${contadorSessao !== 1 ? 's' : ''} nesta sessão`;
+
+          // Limpar tópico, manter disciplina e origem
+          const inTopico = document.getElementById('q-topico');
+          if (inTopico) { inTopico.value = ''; inTopico.focus(); }
+
+        } catch (e) {
+          Toast.erro('Erro ao registrar questão.');
+          console.error(e);
+        }
+      });
+    });
+  }
+
+  function renderEstatisticas(cont) {
+    if (Object.keys(statsGeral).length === 0) {
+      cont.innerHTML = '<div class="empty-state" style="margin-top:20px;"><div class="empty-state-emoji">📊</div><div class="empty-state-text">Registre questões para ver as estatísticas.</div></div>';
+      return;
+    }
+
+    let totalGeral = 0, acertosGeral = 0, acertosDuvidaGeral = 0, errosGeral = 0, errosDesatGeral = 0;
+    for (const did of Object.keys(statsGeral)) {
+      const s = statsGeral[did];
+      totalGeral += s.total;
+      acertosGeral += s.acertou;
+      acertosDuvidaGeral += s.acertouDuvida;
+      errosGeral += s.errou;
+      errosDesatGeral += s.errouDesatencao;
+    }
+    const taxaGeral = totalGeral > 0 ? (((acertosGeral + acertosDuvidaGeral) / totalGeral) * 100).toFixed(0) : 0;
+    const taxaSolida = totalGeral > 0 ? ((acertosGeral / totalGeral) * 100).toFixed(0) : 0;
+
+    let html = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Resumo geral</div>
+        <div class="card-grid" style="margin-bottom:0;">
+          <div class="card"><div class="card-title">Total</div><div class="card-value">${totalGeral}</div></div>
+          <div class="card"><div class="card-title">Taxa de acerto</div><div class="card-value">${taxaGeral}%</div></div>
+          <div class="card"><div class="card-title">Acerto sólido</div><div class="card-value">${taxaSolida}%</div></div>
+          <div class="card"><div class="card-title">Erros desatenção</div><div class="card-value">${errosDesatGeral}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Por disciplina</div>`;
+
+    for (const d of disciplinas) {
+      const s = statsGeral[d.id];
+      if (!s) continue;
+      const taxa = Questoes.taxaAcerto(s).toFixed(0);
+      const taxaSol = Questoes.taxaAcertoSolido(s).toFixed(0);
+      const elimInfo = DistribuicaoEstudo.calcularMinimoEliminatoria(d);
+      const corTaxa = elimInfo ? (parseFloat(taxa) >= elimInfo.percentual ? 'text-success' : 'text-danger') : '';
+
+      html += `
+        <div class="stat-disciplina">
+          <div class="stat-disc-header">
+            <span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span>
+            <strong>${escapeHtml(d.nome)}</strong>
+            <span class="text-dim">${s.total} questões</span>
+          </div>
+          <div class="stat-disc-barras">
+            <div class="stat-mini-bar">
+              <div class="stat-mini-fill" style="width:${(s.acertou/s.total*100).toFixed(0)}%;background:#4ade80;" title="Acertou: ${s.acertou}"></div>
+              <div class="stat-mini-fill" style="width:${(s.acertouDuvida/s.total*100).toFixed(0)}%;background:#fbbf24;" title="Acertou c/ dúvida: ${s.acertouDuvida}"></div>
+              <div class="stat-mini-fill" style="width:${(s.errou/s.total*100).toFixed(0)}%;background:#ef4444;" title="Errou: ${s.errou}"></div>
+              <div class="stat-mini-fill" style="width:${(s.errouDesatencao/s.total*100).toFixed(0)}%;background:#ff9149;" title="Desatenção: ${s.errouDesatencao}"></div>
+            </div>
+          </div>
+          <div class="stat-disc-detalhe">
+            Taxa: <span class="${corTaxa}">${taxa}%</span> · Sólido: ${taxaSol}%
+            ${elimInfo ? ` · Mín. eliminatória: ${elimInfo.percentual}%` : ''}
+            · ✅${s.acertou} 🟡${s.acertouDuvida} ❌${s.errou} ⚠️${s.errouDesatencao}
+          </div>
+        </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  async function renderHistoricoQ(cont) {
+    const lista = todasQuestoes.slice(0, 100);
+    if (lista.length === 0) {
+      cont.innerHTML = '<div class="empty-state" style="margin-top:20px;"><div class="empty-state-emoji">📋</div><div class="empty-state-text">Nenhuma questão registrada ainda.</div></div>';
+      return;
+    }
+    let html = '<div style="margin-top:12px;">';
+    for (const q of lista) {
+      const d = mapaDisc[q.disciplinaId];
+      const icone = Questoes.ICONES_RESULTADO[q.resultado] ?? '❓';
+      const label = Questoes.LABELS_RESULTADO[q.resultado] ?? q.resultado;
+      html += `<div class="session-item">
+        <span style="font-size:20px;">${icone}</span>
+        <div class="item-content">
+          <div class="item-title">${escapeHtml(q.topico ?? '-')}</div>
+          <div class="item-subtitle"><span class="color-dot" style="background-color:${escapeHtml(d?.cor ?? '#e94560')};display:inline-block;margin-right:6px;vertical-align:middle;"></span>${escapeHtml(d?.nome ?? '-')} · ${escapeHtml(label)} ${q.origem ? '· ' + escapeHtml(q.origem) : ''}</div>
+        </div>
+        <div class="item-meta">${DataUtil.formatarData(q.data)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  renderTab('registrar');
+  document.querySelectorAll('.tabs .tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tabs .tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      renderTab(t.dataset.tab);
+    });
+  });
 };
 
 /* ===== CICLO ===== */
 Paginas.ciclo = async function(main) {
   const concurso = await Concursos.ativo();
-  if (!concurso) {
-    main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\ud83c\udfaf</div><div class="empty-state-text">Configure um concurso primeiro</div></div>';
-    return;
-  }
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
   const disciplinas = await Disciplinas.listar(concurso.id);
   const cfg = await Ciclo.obter(concurso.id);
   let cicloIds = [];
-  if (cfg?.cicloJSON) {
-    try { cicloIds = JSON.parse(cfg.cicloJSON); } catch { cicloIds = []; }
-  }
-  if (cicloIds.length === 0) {
-    cicloIds = (disciplinas ?? []).map(d => d.id);
-  }
+  if (cfg?.cicloJSON) { try { cicloIds = JSON.parse(cfg.cicloJSON); } catch { cicloIds = []; } }
+  if (cicloIds.length === 0) cicloIds = (disciplinas ?? []).map(d => d.id);
   const posicaoAtual = cfg?.posicaoAtual ?? 0;
   const mapaDisc = {};
   for (const d of disciplinas ?? []) mapaDisc[d.id] = d;
 
-  const horasDiarias = concurso?.horasDiarias ?? 4;
-  const segundosDiarios = horasDiarias * 3600;
-
-  // Calcular tempo proporcional por disciplina baseado no peso
-  const cicloDetalhe = cicloIds.map((id, idx) => mapaDisc[id]).filter(d => d);
-  const somaPesos = cicloDetalhe.reduce((a, d) => a + (d?.peso ?? 5), 0) || 1;
-
-  let totalSegCiclo = 0;
-  for (const d of cicloDetalhe) {
-    const fracao = (d?.peso ?? 5) / somaPesos;
-    totalSegCiclo += Math.round(segundosDiarios * fracao);
-  }
+  const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
+  const distMap = {};
+  for (const d of distribuicao) distMap[d.disciplina.id] = d;
 
   main.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Ciclo de Estudos</h1>
-      <p class="page-subtitle">Total estimado: ${TempoUtil.formatarHhMm(totalSegCiclo * cicloDetalhe.length / Math.max(1, cicloDetalhe.length))}</p>
+      <p class="page-subtitle">Baseado no impacto na nota + grau de conhecimento</p>
     </div>
-
     <div class="btn-row mb-12">
-      <button class="btn btn-primary" id="btn-gerar-auto">\ud83c\udfb2 Gerar Ciclo Autom\u00e1tico</button>
+      <button class="btn btn-primary" id="btn-gerar-auto">🎲 Gerar Ciclo Automático</button>
     </div>
-
-    <div id="lista-ciclo"></div>
-  `;
+    <div id="lista-ciclo"></div>`;
 
   function renderCiclo() {
     const cont = document.getElementById('lista-ciclo');
     if (!cont) return;
-    if (cicloIds.length === 0) {
-      cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">\ud83d\udd04</div><div class="empty-state-text">Adicione disciplinas para criar um ciclo</div></div>';
-      return;
-    }
-    const html = cicloIds.map((id, idx) => {
+    if (cicloIds.length === 0) { cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🔄</div><div class="empty-state-text">Gere um ciclo automático</div></div>'; return; }
+    cont.innerHTML = cicloIds.map((id, idx) => {
       const d = mapaDisc[id];
       if (!d) return '';
-      const fracao = (d?.peso ?? 5) / somaPesos;
-      const segSugerido = Math.round(segundosDiarios * fracao);
+      const dist = distMap[d.id];
       const isAtual = idx === posicaoAtual;
+      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? '';
       return `<div class="cycle-item ${isAtual ? 'current' : ''}" data-idx="${idx}">
-        ${isAtual ? '<div class="cycle-current-tag">VOC\u00ca EST\u00c1 AQUI</div>' : ''}
+        ${isAtual ? '<div class="cycle-current-tag">VOCÊ ESTÁ AQUI</div>' : ''}
         <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d?.cor ?? '#e94560')}"></span>
         <div class="item-content">
           <div class="item-title">${escapeHtml(d?.nome ?? '-')}</div>
-          <div class="item-subtitle">Peso ${d?.peso ?? 5}${d?.eliminatoria ? ' \u00b7 Eliminat\u00f3ria' : ''} \u00b7 ~${TempoUtil.formatarHhMm(segSugerido)}</div>
+          <div class="item-subtitle">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) : ''}</div>
         </div>
         <div class="cycle-controls">
-          <button class="cycle-btn" data-acao="up" data-idx="${idx}" ${idx === 0 ? 'disabled' : ''}>\u25b2</button>
-          <button class="cycle-btn" data-acao="down" data-idx="${idx}" ${idx === cicloIds.length - 1 ? 'disabled' : ''}>\u25bc</button>
+          <button class="cycle-btn" data-acao="up" data-idx="${idx}" ${idx === 0 ? 'disabled' : ''}>▲</button>
+          <button class="cycle-btn" data-acao="down" data-idx="${idx}" ${idx === cicloIds.length - 1 ? 'disabled' : ''}>▼</button>
         </div>
       </div>`;
     }).join('');
-    cont.innerHTML = html;
 
     cont.querySelectorAll('.cycle-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const idx = parseInt(btn.dataset.idx);
         const acao = btn.dataset.acao;
-        if (acao === 'up' && idx > 0) {
-          [cicloIds[idx-1], cicloIds[idx]] = [cicloIds[idx], cicloIds[idx-1]];
-        } else if (acao === 'down' && idx < cicloIds.length - 1) {
-          [cicloIds[idx], cicloIds[idx+1]] = [cicloIds[idx+1], cicloIds[idx]];
-        }
+        if (acao === 'up' && idx > 0) { [cicloIds[idx - 1], cicloIds[idx]] = [cicloIds[idx], cicloIds[idx - 1]]; }
+        else if (acao === 'down' && idx < cicloIds.length - 1) { [cicloIds[idx], cicloIds[idx + 1]] = [cicloIds[idx + 1], cicloIds[idx]]; }
         await Ciclo.salvar(concurso.id, posicaoAtual, JSON.stringify(cicloIds));
-        Router.ir('ciclo');
+        renderCiclo();
       });
     });
   }
   renderCiclo();
 
   document.getElementById('btn-gerar-auto')?.addEventListener('click', async () => {
-    Modal.abrir(`
-      <h2 class="modal-title">Gerar Ciclo Autom\u00e1tico?</h2>
-      <p class="modal-text">Isso vai criar um novo ciclo distribuindo as disciplinas proporcionalmente ao peso, evitando consecutivas e priorizando eliminat\u00f3rias.</p>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-        <button class="btn btn-primary" id="btn-conf-gerar">Gerar</button>
-      </div>
-    `);
-    document.getElementById('btn-conf-gerar')?.addEventListener('click', async () => {
-      Modal.fechar();
-      try {
-        await Ciclo.gerarAutomatico(concurso.id);
-        Toast.sucesso('Ciclo gerado com sucesso!');
-        Router.ir('ciclo');
-      } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
-    });
+    cicloIds = await Ciclo.gerarAutomatico(concurso.id, concurso.horasDiarias);
+    Toast.sucesso('Ciclo gerado com base no impacto + conhecimento!');
+    renderCiclo();
   });
 };
 
-/* ===== MAIS (menu) ===== */
+/* ===== MAIS ===== */
 Paginas.mais = async function(main) {
   main.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Mais</h1>
-      <p class="page-subtitle">Configura\u00e7\u00f5es e ferramentas</p>
     </div>
-    <div class="card card-clickable" id="opt-ciclo">
-      <div class="flex gap-12">
-        <div style="font-size:32px;">\ud83d\udd04</div>
-        <div class="item-content">
-          <div class="item-title">Ciclo de Estudos</div>
-          <div class="item-subtitle">Reordene e configure seu ciclo</div>
-        </div>
-        <div style="font-size:18px;color:var(--text-dim);">\u203a</div>
-      </div>
+    <div class="session-item" id="btn-ir-ciclo" style="cursor:pointer;">
+      <span style="font-size:20px;">🔄</span>
+      <div class="item-content"><div class="item-title">Ciclo de Estudos</div><div class="item-subtitle">Gerencie a ordem das disciplinas</div></div>
     </div>
-    <div class="card card-clickable" id="opt-config">
-      <div class="flex gap-12">
-        <div style="font-size:32px;">\u2699\ufe0f</div>
-        <div class="item-content">
-          <div class="item-title">Configura\u00e7\u00f5es</div>
-          <div class="item-subtitle">Concurso, disciplinas, backup</div>
-        </div>
-        <div style="font-size:18px;color:var(--text-dim);">\u203a</div>
-      </div>
+    <div class="session-item" id="btn-ir-config" style="cursor:pointer;">
+      <span style="font-size:20px;">⚙️</span>
+      <div class="item-content"><div class="item-title">Configurações</div><div class="item-subtitle">Concurso, disciplinas e backup</div></div>
     </div>
-    <div class="card card-clickable" id="opt-sobre">
-      <div class="flex gap-12">
-        <div style="font-size:32px;">\u2139\ufe0f</div>
-        <div class="item-content">
-          <div class="item-title">Sobre</div>
-          <div class="item-subtitle">MentorConcursos v1.0</div>
-        </div>
-        <div style="font-size:18px;color:var(--text-dim);">\u203a</div>
-      </div>
-    </div>
-  `;
-  document.getElementById('opt-ciclo')?.addEventListener('click', () => Router.ir('ciclo'));
-  document.getElementById('opt-config')?.addEventListener('click', () => Router.ir('configuracoes'));
-  document.getElementById('opt-sobre')?.addEventListener('click', () => {
+    <div class="session-item" id="btn-ir-sobre" style="cursor:pointer;">
+      <span style="font-size:20px;">ℹ️</span>
+      <div class="item-content"><div class="item-title">Sobre</div><div class="item-subtitle">MentorConcursos v2.0</div></div>
+    </div>`;
+  document.getElementById('btn-ir-ciclo')?.addEventListener('click', () => Router.ir('ciclo'));
+  document.getElementById('btn-ir-config')?.addEventListener('click', () => Router.ir('configuracoes'));
+  document.getElementById('btn-ir-sobre')?.addEventListener('click', () => {
     Modal.abrir(`
-      <h2 class="modal-title">MentorConcursos</h2>
-      <p class="modal-text">Vers\u00e3o 1.0<br/>Aplicativo de estudos para concursos p\u00fablicos com revis\u00f5es espa\u00e7adas, ciclos e timer Pomodoro.</p>
-      <p class="modal-text">Todos os seus dados ficam armazenados localmente no seu dispositivo. Fa\u00e7a backup regularmente!</p>
-      <p class="modal-text"><a href="https://github.com/rafaeaguiarecai-beep/MentorConcursos" target="_blank" style="color:var(--accent);">github.com/rafaeaguiarecai-beep/MentorConcursos</a></p>
-      <div class="modal-actions">
-        <button class="btn btn-primary" onclick="Modal.fechar()">OK</button>
-      </div>
+      <div class="modal-title">MentorConcursos v2.0</div>
+      <div class="modal-text">Gerenciador de estudos para concursos públicos. Dados armazenados localmente no seu dispositivo via IndexedDB.</div>
+      <div class="modal-actions"><button class="btn btn-secondary" onclick="Modal.fechar()">Fechar</button></div>
     `);
   });
 };
 
-/* ===== CONFIGURA\u00c7\u00d5ES ===== */
+/* ===== CONFIGURAÇÕES ===== */
 Paginas.configuracoes = async function(main) {
-  let concurso = await Concursos.ativo();
+  const concurso = await Concursos.ativo();
   const disciplinas = concurso ? await Disciplinas.listar(concurso.id) : [];
-  const ultBackup = Backup.ultimoBackup();
 
   main.innerHTML = `
     <div class="page-header">
-      <h1 class="page-title">Configura\u00e7\u00f5es</h1>
+      <h1 class="page-title">Configurações</h1>
     </div>
 
     <div class="settings-section">
-      <h2 class="settings-section-title">Concurso</h2>
-      ${!concurso ? `
-        <div class="card">
-          <p class="text-dim mb-12">Nenhum concurso configurado.</p>
-          <button class="btn btn-primary" id="btn-novo-concurso">Criar concurso</button>
-        </div>
-      ` : `
-        <div class="card">
-          <div class="form-group">
-            <label>Nome do concurso</label>
-            <input type="text" id="conc-nome" value="${escapeHtml(concurso.nome)}" />
-          </div>
-          <div class="form-group">
-            <label>Data da prova</label>
-            <input type="date" id="conc-data" value="${concurso?.dataProva ? new Date(concurso.dataProva).toISOString().slice(0,10) : ''}" />
-          </div>
-          <div class="form-group">
-            <label>Horas di\u00e1rias de estudo</label>
-            <input type="number" id="conc-horas" min="1" max="16" step="0.5" value="${concurso?.horasDiarias ?? 4}" />
-          </div>
-          <button class="btn btn-primary" id="btn-salvar-conc">Salvar altera\u00e7\u00f5es</button>
-        </div>
-      `}
+      <div class="settings-section-title">Concurso</div>
+      ${concurso ? `
+      <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" value="${escapeHtml(concurso.nome)}" /></div>
+      <div class="form-group"><label>Data da prova</label><input type="date" id="cfg-data" value="${concurso.dataProva ? new Date(concurso.dataProva).toISOString().split('T')[0] : ''}" /></div>
+      <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="cfg-horas" min="1" max="18" value="${concurso.horasDiarias ?? 4}" /></div>
+      <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="500" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
+      <button class="btn btn-primary btn-sm" id="btn-salvar-concurso">Salvar concurso</button>
+      ` : `<button class="btn btn-primary" id="btn-criar-concurso">Criar concurso</button>`}
     </div>
 
-    ${concurso ? `
     <div class="settings-section">
-      <h2 class="settings-section-title">Disciplinas (${disciplinas?.length ?? 0})</h2>
-      <div id="lista-disciplinas">
-        ${(disciplinas ?? []).length === 0
-          ? '<div class="empty-state"><div class="empty-state-emoji">\ud83d\udcda</div><div class="empty-state-text">Nenhuma disciplina cadastrada</div></div>'
-          : disciplinas.map(d => `
-              <div class="discipline-item">
-                <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d?.cor ?? '#e94560')}"></span>
-                <div class="item-content">
-                  <div class="item-title">${escapeHtml(d?.nome ?? '-')}</div>
-                  <div class="item-subtitle">Peso ${d?.peso ?? 5}${d?.eliminatoria ? ' \u00b7 Eliminat\u00f3ria' : ''}</div>
-                </div>
-                <button class="btn-icon" data-acao="editar" data-id="${d.id}" title="Editar">\u270f\ufe0f</button>
-                <button class="btn-icon" data-acao="excluir" data-id="${d.id}" title="Excluir">\ud83d\uddd1\ufe0f</button>
-              </div>
-            `).join('')}
+      <div class="settings-section-title">Disciplinas</div>
+      <div id="lista-disciplinas"></div>
+      ${concurso ? '<button class="btn btn-sm btn-primary mt-12" id="btn-add-disciplina">+ Adicionar disciplina</button>' : ''}
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Backup</div>
+      <div class="btn-row">
+        <button class="btn btn-sm btn-primary" id="btn-exportar">Exportar</button>
+        <button class="btn btn-sm btn-secondary" id="btn-importar-trigger">Importar</button>
+        <button class="btn btn-sm btn-secondary" id="btn-compartilhar">Compartilhar</button>
       </div>
-      <button class="btn btn-secondary mt-12" id="btn-add-disc">+ Adicionar Disciplina</button>
+      <input type="file" id="input-importar" accept=".json" style="display:none;" />
     </div>
-    ` : ''}
 
     <div class="settings-section">
-      <h2 class="settings-section-title">Backup e Restaura\u00e7\u00e3o</h2>
-      <div class="card">
-        <p class="text-dim" style="font-size:12px;margin-bottom:12px;">${ultBackup ? `\u00daltimo backup: ${DataUtil.formatarDataHora(ultBackup)}` : 'Nenhum backup feito ainda'}</p>
-        <div class="btn-row">
-          <button class="btn btn-primary" id="btn-export">\u2b07\ufe0f Exportar Backup (JSON)</button>
+      <div class="settings-section-title" style="color:var(--danger);">Zona de perigo</div>
+      <button class="btn btn-sm btn-danger" id="btn-limpar-dados">Limpar todos os dados</button>
+    </div>`;
+
+  // Render disciplinas
+  function renderDisciplinas() {
+    const cont = document.getElementById('lista-disciplinas');
+    if (!cont) return;
+    if (disciplinas.length === 0) { cont.innerHTML = '<div class="text-dim">Nenhuma disciplina cadastrada.</div>'; return; }
+    cont.innerHTML = disciplinas.map(d => {
+      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? 'Médio';
+      const pontos = (d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1);
+      return `<div class="discipline-item" data-id="${d.id}">
+        <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d.cor)}"></span>
+        <div class="item-content">
+          <div class="item-title">${escapeHtml(d.nome)}</div>
+          <div class="item-subtitle">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${pontos}pts · ${grauLabel}${d.eliminatoria ? ` · Elim. ${d.percentualMinimo ?? 50}%` : ''}</div>
         </div>
-        <div class="btn-row mt-12">
-          <button class="btn btn-secondary" id="btn-import">\u2b06\ufe0f Importar Backup (JSON)</button>
-          <button class="btn btn-secondary" id="btn-share">\ud83d\udce4 Compartilhar</button>
-        </div>
-        <input type="file" id="file-import" accept="application/json,.json" style="display:none;" />
-      </div>
-    </div>
+        <button class="btn-icon btn-edit-disc" data-id="${d.id}" title="Editar">✏️</button>
+      </div>`;
+    }).join('');
 
-    <div class="settings-section">
-      <h2 class="settings-section-title">Dados</h2>
-      <div class="card">
-        <button class="btn btn-danger" id="btn-limpar">\ud83d\uddd1\ufe0f Limpar Todos os Dados</button>
-      </div>
-    </div>
+    cont.querySelectorAll('.btn-edit-disc').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id);
+        const disc = disciplinas.find(d => d.id === id);
+        if (disc) abrirModalEditarDisciplina(disc, concurso);
+      });
+    });
+  }
+  renderDisciplinas();
 
-    <div class="settings-section">
-      <h2 class="settings-section-title">Sobre</h2>
-      <div class="card">
-        <div class="row"><span>Vers\u00e3o</span><span class="text-dim">1.0.0</span></div>
-        <div class="row"><span>C\u00f3digo-fonte</span><a href="https://github.com/rafaeaguiarecai-beep/MentorConcursos" target="_blank" class="text-accent">GitHub</a></div>
-      </div>
-    </div>
-  `;
-
-  document.getElementById('btn-novo-concurso')?.addEventListener('click', () => abrirModalSetupConcurso());
-
-  document.getElementById('btn-salvar-conc')?.addEventListener('click', async () => {
-    const nome = document.getElementById('conc-nome')?.value?.trim();
-    const data = document.getElementById('conc-data')?.value;
-    const horas = parseFloat(document.getElementById('conc-horas')?.value);
-    if (!nome) return Toast.aviso('Informe o nome do concurso.');
+  // Salvar concurso
+  document.getElementById('btn-salvar-concurso')?.addEventListener('click', async () => {
     try {
       await Concursos.atualizar(concurso.id, {
-        nome,
-        dataProva: data ? new Date(data + 'T00:00:00').toISOString() : null,
-        horasDiarias: isNaN(horas) ? 4 : horas
+        nome: document.getElementById('cfg-nome')?.value?.trim() || concurso.nome,
+        dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : concurso.dataProva,
+        horasDiarias: parseInt(document.getElementById('cfg-horas')?.value) || concurso.horasDiarias,
+        totalQuestoes: parseInt(document.getElementById('cfg-total-questoes')?.value) || null
       });
-      Toast.sucesso('Concurso atualizado!');
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
+      Toast.sucesso('Concurso salvo!');
+    } catch (e) { Toast.erro('Erro ao salvar.'); }
   });
 
-  document.querySelectorAll('[data-acao="editar"]').forEach(b => {
-    b.addEventListener('click', () => abrirModalDisciplina(parseInt(b.dataset.id)));
-  });
-  document.querySelectorAll('[data-acao="excluir"]').forEach(b => {
-    b.addEventListener('click', () => confirmarExcluirDisciplina(parseInt(b.dataset.id)));
-  });
-  document.getElementById('btn-add-disc')?.addEventListener('click', () => abrirModalDisciplina(null));
+  document.getElementById('btn-criar-concurso')?.addEventListener('click', () => abrirModalSetupConcurso());
 
-  document.getElementById('btn-export')?.addEventListener('click', async () => {
-    try {
-      await Backup.exportar();
-      Toast.sucesso('Backup exportado com sucesso! Guarde este arquivo em local seguro (Google Drive, email, etc.)', 'success');
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro ao exportar'); }
+  document.getElementById('btn-add-disciplina')?.addEventListener('click', () => {
+    if (concurso) abrirModalEditarDisciplina(null, concurso);
   });
 
-  document.getElementById('btn-share')?.addEventListener('click', async () => {
-    try {
-      const r = await Backup.compartilhar();
-      if (r?.cancelado) return;
-      if (r?.metodo === 'download') Toast.sucesso('Backup baixado (compartilhamento n\u00e3o suportado).');
-      else Toast.sucesso('Backup compartilhado!');
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro ao compartilhar'); }
+  // Backup
+  document.getElementById('btn-exportar')?.addEventListener('click', async () => {
+    try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
+  });
+  document.getElementById('btn-importar-trigger')?.addEventListener('click', () => document.getElementById('input-importar')?.click());
+  document.getElementById('input-importar')?.addEventListener('change', async (e) => {
+    try { await Backup.importarDeArquivo(e.target.files?.[0]); Toast.sucesso('Dados importados!'); Router.ir('dashboard'); }
+    catch (err) { Toast.erro(err?.message ?? 'Erro ao importar'); }
+  });
+  document.getElementById('btn-compartilhar')?.addEventListener('click', async () => {
+    try { const r = await Backup.compartilhar(); if (r?.ok && !r?.cancelado) Toast.sucesso('Backup compartilhado!'); }
+    catch (e) { Toast.erro('Erro ao compartilhar'); }
   });
 
-  document.getElementById('btn-import')?.addEventListener('click', () => {
-    document.getElementById('file-import')?.click();
-  });
-  document.getElementById('file-import')?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Limpar dados
+  document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
     Modal.abrir(`
-      <h2 class="modal-title">\u26a0\ufe0f Aten\u00e7\u00e3o</h2>
-      <p class="modal-text">Importar um backup vai <strong>SUBSTITUIR</strong> todos os dados atuais. Deseja continuar?</p>
+      <div class="modal-title">⚠️ Limpar todos os dados</div>
+      <div class="modal-text">Essa ação é irreversível. Digite <strong>APAGAR</strong> para confirmar:</div>
+      <div class="form-group"><input type="text" id="input-confirmar-limpar" placeholder="APAGAR" /></div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-        <button class="btn btn-danger" id="btn-conf-import">Sim, substituir</button>
+        <button class="btn btn-danger" id="btn-confirmar-limpar">Limpar</button>
       </div>
     `);
-    document.getElementById('btn-conf-import')?.addEventListener('click', async () => {
-      Modal.fechar();
-      Modal.abrir(`
-        <h2 class="modal-title">Importando...</h2>
-        <p class="modal-text" id="prog-text">0%</p>
-        <div class="progress-bar"><div class="progress-bar-fill" id="prog-fill" style="width:0%"></div></div>
-      `, { fecharNoFundo: false });
+    document.getElementById('btn-confirmar-limpar')?.addEventListener('click', async () => {
+      if (document.getElementById('input-confirmar-limpar')?.value?.trim() !== 'APAGAR') { Toast.aviso('Digite APAGAR para confirmar.'); return; }
       try {
-        await Backup.importarDeArquivo(file);
-        const fill = document.getElementById('prog-fill');
-        const text = document.getElementById('prog-text');
-        if (fill) fill.style.width = '100%';
-        if (text) text.textContent = '100%';
-        setTimeout(() => {
-          Modal.fechar();
-          Toast.sucesso('Backup importado com sucesso!');
-          location.reload();
-        }, 600);
-      } catch (err) {
-        Modal.fechar();
-        Toast.erro(err?.message ?? 'Arquivo inv\u00e1lido. Selecione um arquivo de backup v\u00e1lido do MentorConcursos.');
-      }
-    });
-  });
-
-  document.getElementById('btn-limpar')?.addEventListener('click', () => {
-    Modal.abrir(`
-      <h2 class="modal-title">\u26a0\ufe0f Tem certeza?</h2>
-      <p class="modal-text">Isso vai <strong>APAGAR PERMANENTEMENTE</strong> todos os seus dados (concurso, disciplinas, sess\u00f5es, revis\u00f5es). Fa\u00e7a backup antes!</p>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-        <button class="btn btn-danger" id="btn-passo2">Continuar</button>
-      </div>
-    `);
-    document.getElementById('btn-passo2')?.addEventListener('click', () => {
-      Modal.abrir(`
-        <h2 class="modal-title">Confirma\u00e7\u00e3o final</h2>
-        <p class="modal-text">Digite <strong>APAGAR</strong> em mai\u00fasculas para confirmar a exclus\u00e3o de todos os dados.</p>
-        <div class="form-group">
-          <input type="text" id="conf-input" placeholder="Digite APAGAR" autocomplete="off" />
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-          <button class="btn btn-danger" id="btn-confirma-apagar">Apagar tudo</button>
-        </div>
-      `);
-      document.getElementById('btn-confirma-apagar')?.addEventListener('click', async () => {
-        const v = document.getElementById('conf-input')?.value?.trim();
-        if (v !== 'APAGAR') {
-          Toast.erro('Digite APAGAR exatamente para confirmar');
-          return;
-        }
-        try {
-          await db.concursos.clear();
-          await db.disciplinas.clear();
-          await db.topicos.clear();
-          await db.sessoes.clear();
-          await db.revisoes.clear();
-          await db.cicloConfig.clear();
-          try { localStorage.removeItem(Backup.CHAVE_ULTIMO); } catch (e) {}
-          Modal.fechar();
-          Toast.sucesso('Todos os dados foram apagados.');
-          setTimeout(() => location.reload(), 800);
-        } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
-      });
+        await db.concursos.clear(); await db.disciplinas.clear(); await db.topicos.clear();
+        await db.sessoes.clear(); await db.revisoes.clear(); await db.cicloConfig.clear(); await db.questoes.clear();
+        Modal.fechar(); Toast.sucesso('Dados limpos!'); Router.ir('dashboard');
+      } catch (e) { Toast.erro('Erro ao limpar dados.'); }
     });
   });
 };
 
-/* ============ MODAL: Setup Concurso ============ */
+/* ============ Modal: Setup Concurso ============ */
 async function abrirModalSetupConcurso() {
   Modal.abrir(`
-    <h2 class="modal-title">Novo Concurso</h2>
-    <p class="modal-text">Configure os dados b\u00e1sicos do seu concurso.</p>
-    <div class="form-group">
-      <label>Nome do concurso</label>
-      <input type="text" id="setup-nome" placeholder="Ex: PF Agente 2025" />
-    </div>
-    <div class="form-group">
-      <label>Data da prova</label>
-      <input type="date" id="setup-data" />
-    </div>
-    <div class="form-group">
-      <label>Horas di\u00e1rias de estudo</label>
-      <input type="number" id="setup-horas" min="1" max="16" step="0.5" value="4" />
-    </div>
+    <div class="modal-title">🎯 Configurar Concurso</div>
+    <div class="form-group"><label>Nome do concurso</label><input type="text" id="setup-nome" placeholder="Ex: TRF3 - Analista" /></div>
+    <div class="form-group"><label>Data da prova</label><input type="date" id="setup-data" /></div>
+    <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="setup-horas" min="1" max="18" value="6" /></div>
+    <div class="form-group"><label>Total de questões da prova</label><input type="number" id="setup-total-q" min="1" max="500" placeholder="Ex: 120" /></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-primary" id="btn-criar-conc">Criar</button>
+      <button class="btn btn-primary" id="setup-salvar">Criar</button>
     </div>
-  `);
-  document.getElementById('btn-criar-conc')?.addEventListener('click', async () => {
+  `, { fecharNoFundo: false });
+
+  document.getElementById('setup-salvar')?.addEventListener('click', async () => {
     const nome = document.getElementById('setup-nome')?.value?.trim();
-    const data = document.getElementById('setup-data')?.value;
-    const horas = parseFloat(document.getElementById('setup-horas')?.value);
-    if (!nome) return Toast.aviso('Informe o nome do concurso.');
+    const dataVal = document.getElementById('setup-data')?.value;
+    const horas = parseInt(document.getElementById('setup-horas')?.value) || 6;
+    const totalQ = parseInt(document.getElementById('setup-total-q')?.value) || null;
+    if (!nome) { Toast.aviso('Informe o nome do concurso.'); return; }
     try {
       await Concursos.criar({
         nome,
-        dataProva: data ? new Date(data + 'T00:00:00').toISOString() : null,
-        horasDiarias: isNaN(horas) ? 4 : horas
+        dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null,
+        horasDiarias: horas,
+        totalQuestoes: totalQ
       });
       Modal.fechar();
-      Toast.sucesso('Concurso criado! Agora cadastre suas disciplinas em Configura\u00e7\u00f5es.');
+      Toast.sucesso('Concurso criado!');
+      const nav = document.getElementById('bottom-nav');
+      if (nav) nav.style.display = 'flex';
       Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
+    } catch (e) { Toast.erro('Erro ao criar concurso.'); }
   });
 }
 window.abrirModalSetupConcurso = abrirModalSetupConcurso;
 
-/* ============ MODAL: Disciplina ============ */
-async function abrirModalDisciplina(id) {
-  const concurso = await Concursos.ativo();
-  if (!concurso) return;
-  let disc = null;
-  if (id) disc = await Disciplinas.obter(id);
-  const corPadrao = disc?.cor ?? CORES_PADRAO[Math.floor(Math.random() * CORES_PADRAO.length)];
+/* ============ Modal: Editar/Criar Disciplina ============ */
+async function abrirModalEditarDisciplina(disc, concurso) {
+  const isNovo = !disc;
+  const corPadrao = CORES_PADRAO[Math.floor(Math.random() * CORES_PADRAO.length)];
+
   Modal.abrir(`
-    <h2 class="modal-title">${id ? 'Editar' : 'Nova'} Disciplina</h2>
+    <div class="modal-title">${isNovo ? '+ Nova Disciplina' : 'Editar Disciplina'}</div>
+    <div class="form-group"><label>Nome</label><input type="text" id="disc-nome" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Constitucional" /></div>
+    <div class="form-group"><label>Nº de questões na prova</label><input type="number" id="disc-num-questoes" min="1" max="200" value="${disc?.numQuestoes ?? 10}" /></div>
+    <div class="form-group"><label>Peso por questão</label><input type="number" id="disc-peso-questao" min="1" max="10" value="${disc?.pesoQuestao ?? 1}" /></div>
     <div class="form-group">
-      <label>Nome</label>
-      <input type="text" id="disc-nome" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Administrativo" />
-    </div>
-    <div class="form-group">
-      <label>Peso (1-10) <span class="text-dim">- maior peso = mais tempo no ciclo</span></label>
-      <input type="number" id="disc-peso" min="1" max="10" value="${disc?.peso ?? 5}" />
-    </div>
-    <div class="form-group">
-      <div class="row" style="border:none;padding:0;">
-        <span>Eliminat\u00f3ria</span>
-        <div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-eliminatoria" role="switch" tabindex="0"></div>
-      </div>
+      <label>Grau de conhecimento</label>
+      <select id="disc-grau">
+        ${[1,2,3,4,5].map(g => `<option value="${g}" ${(disc?.grauConhecimento ?? 3) === g ? 'selected' : ''}>${g} - ${DistribuicaoEstudo.LABELS_CONHECIMENTO[g]}</option>`).join('')}
+      </select>
     </div>
     <div class="form-group">
       <label>Cor</label>
-      <input type="color" id="disc-cor" value="${corPadrao}" />
+      <input type="color" id="disc-cor" value="${disc?.cor ?? corPadrao}" />
     </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-primary" id="btn-salvar-disc">Salvar</button>
-    </div>
-  `);
-
-  const tog = document.getElementById('disc-eliminatoria');
-  tog?.addEventListener('click', () => tog.classList.toggle('active'));
-
-  document.getElementById('btn-salvar-disc')?.addEventListener('click', async () => {
-    const nome = document.getElementById('disc-nome')?.value?.trim();
-    const peso = parseInt(document.getElementById('disc-peso')?.value);
-    const elim = document.getElementById('disc-eliminatoria')?.classList.contains('active');
-    const cor = document.getElementById('disc-cor')?.value ?? '#e94560';
-    if (!nome) return Toast.aviso('Informe o nome da disciplina.');
-    try {
-      if (id) {
-        await Disciplinas.atualizar(id, { nome, peso: isNaN(peso) ? 5 : peso, eliminatoria: elim, cor });
-        Toast.sucesso('Disciplina atualizada!');
-      } else {
-        const lista = await Disciplinas.listar(concurso.id);
-        await Disciplinas.criar({
-          concursoId: concurso.id,
-          nome,
-          peso: isNaN(peso) ? 5 : peso,
-          eliminatoria: elim,
-          cor,
-          ordemCiclo: lista.length
-        });
-        Toast.sucesso('Disciplina criada!');
-      }
-      Modal.fechar();
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
-  });
-}
-
-async function confirmarExcluirDisciplina(id) {
-  Modal.abrir(`
-    <h2 class="modal-title">Excluir disciplina?</h2>
-    <p class="modal-text">Sess\u00f5es e revis\u00f5es vinculadas a esta disciplina permanecer\u00e3o no banco mas podem ficar sem refer\u00eancia. Deseja continuar?</p>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-danger" id="btn-conf-excluir-d">Excluir</button>
-    </div>
-  `);
-  document.getElementById('btn-conf-excluir-d')?.addEventListener('click', async () => {
-    try {
-      await Disciplinas.remover(id);
-      // Tamb\u00e9m atualizar ciclo, removendo o id
-      const concurso = await Concursos.ativo();
-      if (concurso) {
-        const cfg = await Ciclo.obter(concurso.id);
-        if (cfg?.cicloJSON) {
-          let arr = [];
-          try { arr = JSON.parse(cfg.cicloJSON); } catch { arr = []; }
-          arr = arr.filter(x => x !== id);
-          await Ciclo.salvar(concurso.id, Math.min(cfg?.posicaoAtual ?? 0, Math.max(0, arr.length - 1)), JSON.stringify(arr));
-        }
-      }
-      Modal.fechar();
-      Toast.sucesso('Disciplina exclu\u00edda.');
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
-  });
-}
-
-/* ============ MODAL: Finalizar sess\u00e3o ============ */
-async function abrirModalFinalizar(dadosSessao) {
-  let avaliacao = 0;
-  Modal.abrir(`
-    <h2 class="modal-title">Sess\u00e3o conclu\u00edda!</h2>
-    <p class="modal-text">Tempo total: <strong>${TempoUtil.formatarHhMm(dadosSessao?.duracaoSegundos)}</strong></p>
     <div class="form-group">
-      <label class="text-center" style="display:block;">Como foi essa sess\u00e3o?</label>
-      <div class="stars" id="stars-rating">
-        ${[1,2,3,4,5].map(i => `<span class="star" data-val="${i}">\u2605</span>`).join('')}
+      <div class="row" style="border:none;padding:0;">
+        <label style="margin:0;">Eliminatória?</label>
+        <div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-elim-toggle"></div>
+      </div>
+    </div>
+    <div class="form-group" id="disc-elim-percentual-wrap" style="display:${disc?.eliminatoria ? 'block' : 'none'};">
+      <label>Percentual mínimo de acerto (%)</label>
+      <input type="number" id="disc-percentual-min" min="1" max="100" value="${disc?.percentualMinimo ?? 50}" />
+    </div>
+    <div class="modal-actions">
+      ${!isNovo ? '<button class="btn btn-danger btn-sm" id="disc-remover">Remover</button>' : ''}
+      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+      <button class="btn btn-primary" id="disc-salvar">Salvar</button>
+    </div>
+  `);
+
+  let eliminatoria = disc?.eliminatoria ?? false;
+  document.getElementById('disc-elim-toggle')?.addEventListener('click', () => {
+    eliminatoria = !eliminatoria;
+    document.getElementById('disc-elim-toggle')?.classList.toggle('active', eliminatoria);
+    document.getElementById('disc-elim-percentual-wrap').style.display = eliminatoria ? 'block' : 'none';
+  });
+
+  document.getElementById('disc-salvar')?.addEventListener('click', async () => {
+    const nome = document.getElementById('disc-nome')?.value?.trim();
+    if (!nome) { Toast.aviso('Informe o nome.'); return; }
+    const dados = {
+      concursoId: concurso.id,
+      nome,
+      numQuestoes: parseInt(document.getElementById('disc-num-questoes')?.value) || 10,
+      pesoQuestao: parseInt(document.getElementById('disc-peso-questao')?.value) || 1,
+      grauConhecimento: parseInt(document.getElementById('disc-grau')?.value) || 3,
+      cor: document.getElementById('disc-cor')?.value ?? corPadrao,
+      eliminatoria,
+      percentualMinimo: eliminatoria ? (parseInt(document.getElementById('disc-percentual-min')?.value) || 50) : null,
+      ordemCiclo: disc?.ordemCiclo ?? 0
+    };
+    try {
+      if (isNovo) {
+        const discs = await Disciplinas.listar(concurso.id);
+        dados.ordemCiclo = discs.length;
+        await Disciplinas.criar(dados);
+        Toast.sucesso('Disciplina adicionada!');
+      } else {
+        await Disciplinas.atualizar(disc.id, dados);
+        Toast.sucesso('Disciplina atualizada!');
+      }
+      Modal.fechar();
+      Router.ir('configuracoes');
+    } catch (e) { Toast.erro('Erro ao salvar disciplina.'); }
+  });
+
+  document.getElementById('disc-remover')?.addEventListener('click', async () => {
+    if (!disc) return;
+    Modal.abrir(`
+      <div class="modal-title">Remover disciplina?</div>
+      <div class="modal-text">Isso removerá "${escapeHtml(disc.nome)}" e todas as sessões, revisões e questões associadas.</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+        <button class="btn btn-danger" id="disc-confirmar-remover">Remover</button>
+      </div>
+    `);
+    document.getElementById('disc-confirmar-remover')?.addEventListener('click', async () => {
+      try {
+        await Disciplinas.remover(disc.id);
+        // Limpar sessões, revisões e questões da disciplina
+        const sessoes = await db.sessoes.where({ disciplinaId: disc.id }).toArray();
+        for (const s of sessoes) await db.sessoes.delete(s.id);
+        const revisoes = await db.revisoes.where({ disciplinaId: disc.id }).toArray();
+        for (const r of revisoes) await db.revisoes.delete(r.id);
+        const questoes = await db.questoes.where({ disciplinaId: disc.id }).toArray();
+        for (const q of questoes) await db.questoes.delete(q.id);
+        Modal.fechar(); Toast.sucesso('Disciplina removida!'); Router.ir('configuracoes');
+      } catch (e) { Toast.erro('Erro ao remover.'); }
+    });
+  });
+}
+window.abrirModalEditarDisciplina = abrirModalEditarDisciplina;
+
+/* ============ Modal: Finalizar Sessão ============ */
+async function abrirModalFinalizar(dados) {
+  const frase = FRASES_MOTIVACIONAIS[Math.floor(Math.random() * FRASES_MOTIVACIONAIS.length)];
+
+  Modal.abrir(`
+    <div class="modal-title">🎉 Sessão finalizada!</div>
+    <div class="modal-text" style="font-style:italic;">"${escapeHtml(frase)}"</div>
+    <div class="modal-text">
+      <strong>${escapeHtml(dados.topico)}</strong><br/>
+      ${escapeHtml(dados.tipo)} · ${TempoUtil.formatarHhMm(dados.duracaoSegundos)}
+    </div>
+    <div class="form-group">
+      <label>Como você avalia essa sessão?</label>
+      <div class="stars" id="stars-avaliacao">
+        ${[1,2,3,4,5].map(i => `<span class="star" data-val="${i}">☆</span>`).join('')}
       </div>
     </div>
     <div class="form-group">
-      <label>Notas (opcional)</label>
-      <textarea id="ses-notas" rows="3" placeholder="O que voc\u00ea achou? Pontos a revisar..."></textarea>
+      <label>Anotações (opcional)</label>
+      <textarea id="finalizar-notas" rows="2" placeholder="Ex: Preciso revisar a parte de..."></textarea>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-primary" id="btn-registrar-ses">Registrar Sess\u00e3o</button>
+      <button class="btn btn-secondary" id="finalizar-descartar">Descartar</button>
+      <button class="btn btn-primary" id="finalizar-salvar">Salvar sessão</button>
     </div>
   `, { fecharNoFundo: false });
 
-  document.querySelectorAll('#stars-rating .star').forEach(s => {
-    s.addEventListener('click', () => {
-      avaliacao = parseInt(s.dataset.val);
-      document.querySelectorAll('#stars-rating .star').forEach(x => {
-        x.classList.toggle('active', parseInt(x.dataset.val) <= avaliacao);
+  let avaliacao = 0;
+  document.querySelectorAll('#stars-avaliacao .star').forEach(star => {
+    star.addEventListener('click', () => {
+      avaliacao = parseInt(star.dataset.val);
+      document.querySelectorAll('#stars-avaliacao .star').forEach((s, i) => {
+        s.textContent = (i < avaliacao) ? '★' : '☆';
+        s.classList.toggle('active', i < avaliacao);
       });
     });
   });
 
-  document.getElementById('btn-registrar-ses')?.addEventListener('click', async () => {
+  document.getElementById('finalizar-descartar')?.addEventListener('click', () => {
+    Modal.fechar(); Timer.resetar();
+  });
+
+  document.getElementById('finalizar-salvar')?.addEventListener('click', async () => {
     try {
-      const notas = document.getElementById('ses-notas')?.value?.trim() ?? '';
-      const sessaoData = {
-        concursoId: dadosSessao?.concursoId,
-        disciplinaId: dadosSessao?.disciplinaId,
-        topico: dadosSessao?.topico,
-        tipo: dadosSessao?.tipo,
-        data: dadosSessao?.iniciadoEm ?? new Date().toISOString(),
-        duracaoSegundos: dadosSessao?.duracaoSegundos ?? 0,
+      const notas = document.getElementById('finalizar-notas')?.value?.trim() ?? '';
+      const sessaoId = await Sessoes.criar({
+        concursoId: dados.concursoId,
+        disciplinaId: dados.disciplinaId,
+        topico: dados.topico,
+        tipo: dados.tipo,
+        data: dados.iniciadoEm ?? new Date().toISOString(),
+        duracaoSegundos: dados.duracaoSegundos,
         avaliacao,
         notas
-      };
-      const id = await Sessoes.criar(sessaoData);
-      sessaoData.id = id;
+      });
 
-      // Se "Novo": criar 3 revis\u00f5es
-      if (dadosSessao?.tipo === 'Novo') {
-        await Revisoes.criarParaSessao(sessaoData);
-      } else if (['Revis\u00e3o 1', 'Revis\u00e3o 2', 'Revis\u00e3o 3'].includes(dadosSessao?.tipo)) {
-        const rev = await Revisoes.encontrarRevisaoCorrespondente(dadosSessao?.disciplinaId, dadosSessao?.topico, dadosSessao?.tipo);
+      // Criar revisões se for sessão de conteúdo novo
+      if (dados.tipo === 'Novo') {
+        await Revisoes.criarParaSessao({
+          id: sessaoId, disciplinaId: dados.disciplinaId,
+          topico: dados.topico, tipo: 'Novo',
+          data: dados.iniciadoEm ?? new Date().toISOString()
+        });
+      }
+
+      // Se é revisão, marcar a correspondente como feita
+      if (dados.tipo?.startsWith('Revisão')) {
+        const rev = await Revisoes.encontrarRevisaoCorrespondente(dados.disciplinaId, dados.topico, dados.tipo);
         if (rev) await Revisoes.marcarFeita(rev.id);
       }
 
-      // Avan\u00e7ar ciclo
-      try { await Ciclo.avancarPosicao(dadosSessao?.concursoId); } catch {}
+      // Avançar ciclo
+      const concurso = await Concursos.ativo();
+      if (concurso) await Ciclo.avancarPosicao(concurso.id);
 
-      Timer.resetar();
-
-      // Modal de sucesso com frase
-      const frase = FRASES_MOTIVACIONAIS[Math.floor(Math.random() * FRASES_MOTIVACIONAIS.length)];
-      Modal.abrir(`
-        <div class="text-center">
-          <div style="font-size:60px;margin-bottom:8px;">\ud83c\udf89</div>
-          <h2 class="modal-title">Sess\u00e3o registrada!</h2>
-          <p class="modal-text" style="font-style:italic;font-size:15px;">"${escapeHtml(frase)}"</p>
-        </div>
-      `, { fecharNoFundo: false });
-
-      setTimeout(() => {
-        Modal.fechar();
-        Router.ir('dashboard');
-      }, 3000);
+      Modal.fechar(); Timer.resetar();
+      Toast.sucesso('Sessão registrada!');
+      Router.ir('dashboard');
     } catch (e) {
+      Toast.erro('Erro ao salvar sessão.');
       console.error(e);
-      Toast.erro(e?.message ?? 'Erro ao salvar');
     }
   });
 }
 window.abrirModalFinalizar = abrirModalFinalizar;
 
-/* ============ Bootstrap ============ */
-window.addEventListener('DOMContentLoaded', async () => {
-  // Setup nav events
-  document.querySelectorAll('#bottom-nav .nav-item').forEach(item => {
+/* ============ Inicialização ============ */
+document.addEventListener('DOMContentLoaded', async () => {
+  const nav = document.getElementById('bottom-nav');
+  const concurso = await Concursos.ativo();
+  if (nav) nav.style.display = concurso ? 'flex' : 'none';
+
+  // Navegação
+  nav?.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
-      const pg = item.dataset.page;
-      if (pg) Router.ir(pg);
+      Router.ir(item.dataset.page);
     });
   });
-  // Mostrar nav
-  const nav = document.getElementById('bottom-nav');
-  if (nav) nav.style.display = 'flex';
-  // Iniciar dashboard
+
   Router.ir('dashboard');
-  // Atualiza badge a cada minuto
-  setInterval(() => atualizarBadgeRevisoes(), 60000);
 });
