@@ -1,5 +1,5 @@
 /* ====== MentorConcursos - Service Worker (cache-first) ====== */
-const CACHE_NAME = 'mentorconcursos-v2';
+const CACHE_NAME = 'mentorconcursos-v3';
 const APP_SHELL = [
   './',
   './index.html',

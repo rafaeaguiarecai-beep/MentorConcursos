@@ -1131,3 +1131,48 @@ label {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ===== v3: Meta Semanal e Acompanhamento ===== */
+.meta-semanal-card { border-left: 4px solid var(--accent); }
+
+.meta-resumo {
+  display: flex;
+  justify-content: space-around;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.meta-resumo-item {
+  text-align: center;
+  flex: 1;
+  min-width: 70px;
+}
+.meta-resumo-valor {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--text-primary, #eee);
+}
+.meta-resumo-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary, #aaa);
+  margin-top: 2px;
+}
+
+.acomp-disc-item {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.acomp-disc-item:last-child { border-bottom: none; }
+
+.acomp-disc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acomp-status-badge {
+  margin-left: auto;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #000;
+  padding: 2px 8px;
+  border-radius: 10px;
+}

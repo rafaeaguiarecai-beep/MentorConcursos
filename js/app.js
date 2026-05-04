@@ -1,4 +1,4 @@
-/* ====== MentorConcursos v2 - Lógica Principal e SPA ====== */
+/* ====== MentorConcursos v3 - Lógica Principal e SPA ====== */
 
 const FRASES_MOTIVACIONAIS = [
   'Cada minuto investido hoje é um passo a mais rumo à aprovação.',
@@ -88,7 +88,8 @@ const Router = {
     const mapaNav = {
       dashboard: 'dashboard', estudar: 'estudar', revisoes: 'revisoes',
       historico: 'historico', mais: 'mais', ciclo: 'mais',
-      configuracoes: 'mais', questoes: 'questoes'
+      configuracoes: 'mais', questoes: 'questoes',
+      acompanhamento: 'dashboard'
     };
     const navAtiva = mapaNav[this.paginaAtual] ?? 'dashboard';
     itens.forEach(item => {
@@ -236,6 +237,29 @@ const Paginas = {
     const precisaBackup = Backup.precisaLembrar();
     const dias = Backup.diasDesdeUltimo();
 
+    // ---- META SEMANAL ----
+    const metaSemanalSeg = (concurso.horasDiarias ?? 4) * 3600 * 7;
+    const inicioSem = DataUtil.inicioSemana(new Date());
+    const fimSem = DataUtil.fimSemana(new Date());
+    const sessSemana = (sessoes ?? []).filter(s => {
+      const d = new Date(s?.data);
+      return d >= inicioSem && d <= fimSem;
+    });
+    const segEstudadosSemana = sessSemana.reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
+    const pctSemana = metaSemanalSeg > 0 ? Math.min(100, Math.round((segEstudadosSemana / metaSemanalSeg) * 100)) : 0;
+
+    // Dias já estudados na semana
+    const diasEstudadosSet = new Set();
+    for (const s of sessSemana) {
+      diasEstudadosSet.add(new Date(s?.data).toDateString());
+    }
+    const diasEstudados = diasEstudadosSet.size;
+    const diaDaSemana = new Date().getDay(); // 0=dom
+    const diasPassados = diaDaSemana === 0 ? 7 : diaDaSemana; // seg=1 ... dom=7
+    const diasRestantes = 7 - diasPassados;
+    const segRestantes = metaSemanalSeg - segEstudadosSemana;
+    const metaDiariaSugerida = diasRestantes > 0 ? Math.max(0, segRestantes / diasRestantes) : 0;
+
     main.innerHTML = `
       <div class="page-header">
         <h1 class="page-title">Dashboard</h1>
@@ -252,6 +276,42 @@ const Paginas = {
         <button class="btn btn-sm btn-primary" id="banner-export">Exportar</button>
       </div>` : ''}
 
+      <div class="card meta-semanal-card">
+        <div class="card-title">Meta da Semana</div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${TempoUtil.formatarHhMm(segEstudadosSemana)}</div>
+            <div class="meta-resumo-label">Estudado</div>
+          </div>
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaSemanalSeg)}</div>
+            <div class="meta-resumo-label">Meta semanal</div>
+          </div>
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${pctSemana}%</div>
+            <div class="meta-resumo-label">Concluído</div>
+          </div>
+        </div>
+        <div class="progress-bar" style="height:10px;margin:10px 0;">
+          <div class="progress-bar-fill" style="width:${pctSemana}%;background:${pctSemana >= 100 ? '#4ade80' : pctSemana >= 60 ? '#fbbf24' : '#e94560'};"></div>
+        </div>
+        <div class="meta-resumo" style="margin-top:8px;">
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${diasEstudados}/${diasPassados}</div>
+            <div class="meta-resumo-label">Dias estudados</div>
+          </div>
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaDiariaSugerida)}</div>
+            <div class="meta-resumo-label">Meta hoje${diasRestantes > 1 ? ` (${diasRestantes}d rest.)` : ''}</div>
+          </div>
+          <div class="meta-resumo-item">
+            <div class="meta-resumo-valor">${sessSemana.length}</div>
+            <div class="meta-resumo-label">Sessões</div>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-secondary" id="btn-ver-acompanhamento" style="margin-top:12px;width:100%;">Ver acompanhamento completo</button>
+      </div>
+
       <div class="card countdown-card">
         <div class="card-title">Contagem regressiva</div>
         <div class="card-value" id="countdown-status">Calculando...</div>
@@ -260,7 +320,7 @@ const Paginas = {
 
       <div class="card-grid">
         <div class="card">
-          <div class="card-title">Horas estudadas</div>
+          <div class="card-title">Horas totais</div>
           <div class="card-value">${TempoUtil.formatarHhMm(totalSeg)}</div>
         </div>
         <div class="card">
@@ -322,8 +382,8 @@ const Paginas = {
           : proximasOrdenadas.map(r => {
               const d = mapaDisc[r?.disciplinaId];
               const data = new Date(r?.dataPrevista);
-              const hoje = DataUtil.hoje();
-              const atrasada = data < hoje;
+              const hj = DataUtil.hoje();
+              const atrasada = data < hj;
               return `<div class="review-item ${atrasada ? 'overdue' : ''}">
                 <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d?.cor ?? '#e94560')}"></span>
                 <div class="item-content">
@@ -336,6 +396,7 @@ const Paginas = {
       </div>
     `;
 
+    // Event listeners do dashboard
     if (precisaBackup) {
       document.getElementById('banner-export')?.addEventListener('click', async () => {
         try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); Router.ir('dashboard'); }
@@ -343,6 +404,7 @@ const Paginas = {
       });
     }
     document.getElementById('card-revisoes-hoje')?.addEventListener('click', () => Router.ir('revisoes'));
+    document.getElementById('btn-ver-acompanhamento')?.addEventListener('click', () => Router.ir('acompanhamento'));
 
     // Countdown
     const atualizarCountdown = () => {
@@ -360,16 +422,16 @@ const Paginas = {
       const status = document.getElementById('countdown-status');
       if (!grid || !status) return;
       if (diff <= 0) { status.textContent = 'Prova já ocorreu'; grid.innerHTML = ''; return; }
-      const d = Math.floor(diff / 86400000);
-      const h = Math.floor((diff % 86400000) / 3600000);
-      const m = Math.floor((diff % 3600000) / 60000);
-      const s = Math.floor((diff % 60000) / 1000);
-      status.textContent = `${d} dia${d !== 1 ? 's' : ''} até a prova`;
+      const dd = Math.floor(diff / 86400000);
+      const hh = Math.floor((diff % 86400000) / 3600000);
+      const mm = Math.floor((diff % 3600000) / 60000);
+      const ss = Math.floor((diff % 60000) / 1000);
+      status.textContent = `${dd} dia${dd !== 1 ? 's' : ''} até a prova`;
       grid.innerHTML = `
-        <div class="countdown-unit"><span class="countdown-value">${d}</span><span class="countdown-label">Dias</span></div>
-        <div class="countdown-unit"><span class="countdown-value">${h}</span><span class="countdown-label">Horas</span></div>
-        <div class="countdown-unit"><span class="countdown-value">${m}</span><span class="countdown-label">Min</span></div>
-        <div class="countdown-unit"><span class="countdown-value">${s}</span><span class="countdown-label">Seg</span></div>`;
+        <div class="countdown-unit"><span class="countdown-value">${dd}</span><span class="countdown-label">Dias</span></div>
+        <div class="countdown-unit"><span class="countdown-value">${hh}</span><span class="countdown-label">Horas</span></div>
+        <div class="countdown-unit"><span class="countdown-value">${mm}</span><span class="countdown-label">Min</span></div>
+        <div class="countdown-unit"><span class="countdown-value">${ss}</span><span class="countdown-label">Seg</span></div>`;
     };
     atualizarCountdown();
     if (window.__countdownInt) clearInterval(window.__countdownInt);
@@ -484,11 +546,12 @@ const Paginas = {
       if (!card || !d) return;
       const dist = distribuicao.find(x => x.disciplina.id === d.id);
       const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? '';
+      const metaSemanalDisc = dist ? dist.segundosSugeridos * 7 : 0;
       card.style.backgroundColor = d?.cor ?? '#e94560';
       card.innerHTML = `
         <div class="estudar-discipline-label">Próxima no ciclo</div>
         <div class="estudar-discipline-name">${escapeHtml(d?.nome ?? '-')}</div>
-        <div class="estudar-discipline-label" style="margin-top:4px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) + '/dia' : ''}</div>
+        <div class="estudar-discipline-label" style="margin-top:4px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) + '/dia · ~' + TempoUtil.formatarHhMm(metaSemanalDisc) + '/sem' : ''}</div>
       `;
     };
     renderCardDisc();
@@ -502,7 +565,6 @@ const Paginas = {
     sel?.addEventListener('change', () => {
       disciplinaSelId = parseInt(sel.value);
       renderCardDisc();
-      // Atualizar timer com tempo sugerido da nova disciplina
       const novaDist = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
       if (novaDist && !Timer.rodando && !Timer.pausado) {
         const novosMin = Math.max(5, Math.round(novaDist.segundosSugeridos / 60));
@@ -736,8 +798,8 @@ Paginas.historico = async function(main) {
     const grupos = {};
     for (const s of lista) { const d = new Date(s?.data ?? 0); const chave = DataUtil.inicioDia(d).toISOString(); if (!grupos[chave]) grupos[chave] = []; grupos[chave].push(s); }
     const chaves = Object.keys(grupos).sort((a, b) => new Date(b) - new Date(a));
-    const hoje = DataUtil.hoje();
-    const ontem = DataUtil.adicionarDias(hoje, -1);
+    const hj = DataUtil.hoje();
+    const ontem = DataUtil.adicionarDias(hj, -1);
 
     let html = '';
     for (const k of chaves) {
@@ -745,7 +807,7 @@ Paginas.historico = async function(main) {
       const totalSegDia = grupo.reduce((acc, s) => acc + (s?.duracaoSegundos ?? 0), 0);
       const dataGrupo = new Date(k);
       let label = DataUtil.formatarData(dataGrupo);
-      if (dataGrupo.getTime() === hoje.getTime()) label = 'Hoje';
+      if (dataGrupo.getTime() === hj.getTime()) label = 'Hoje';
       else if (dataGrupo.getTime() === ontem.getTime()) label = 'Ontem';
       html += `<div class="history-day-header">${label} <span class="history-day-total">· ${TempoUtil.formatarHhMm(totalSegDia)} · ${grupo.length} sessão${grupo.length !== 1 ? 'es' : ''}</span></div>`;
       for (const s of grupo) {
@@ -853,13 +915,11 @@ Paginas.questoes = async function(main) {
 
     let contadorSessao = 0;
 
-    // Autocomplete tópico
     setupAutocomplete('q-topico', async () => {
       const selVal = parseInt(document.getElementById('q-disciplina')?.value);
       return await Questoes.topicosUsados(selVal);
     });
 
-    // Autocomplete origem
     setupAutocomplete('q-origem', async () => {
       return await Questoes.origensUsadas(concurso.id);
     });
@@ -897,7 +957,6 @@ Paginas.questoes = async function(main) {
           }
           document.getElementById('q-contador').textContent = `${contadorSessao} questão${contadorSessao !== 1 ? 'ões' : ''} registrada${contadorSessao !== 1 ? 's' : ''} nesta sessão`;
 
-          // Limpar tópico, manter disciplina e origem
           const inTopico = document.getElementById('q-topico');
           if (inTopico) { inTopico.value = ''; inTopico.focus(); }
 
@@ -1095,16 +1154,249 @@ Paginas.mais = async function(main) {
     </div>
     <div class="session-item" id="btn-ir-sobre" style="cursor:pointer;">
       <span style="font-size:20px;">ℹ️</span>
-      <div class="item-content"><div class="item-title">Sobre</div><div class="item-subtitle">MentorConcursos v2.0</div></div>
+      <div class="item-content"><div class="item-title">Sobre</div><div class="item-subtitle">MentorConcursos v3.0</div></div>
     </div>`;
   document.getElementById('btn-ir-ciclo')?.addEventListener('click', () => Router.ir('ciclo'));
   document.getElementById('btn-ir-config')?.addEventListener('click', () => Router.ir('configuracoes'));
   document.getElementById('btn-ir-sobre')?.addEventListener('click', () => {
     Modal.abrir(`
-      <div class="modal-title">MentorConcursos v2.0</div>
-      <div class="modal-text">Gerenciador de estudos para concursos públicos. Dados armazenados localmente no seu dispositivo via IndexedDB.</div>
+      <div class="modal-title">MentorConcursos v3.0</div>
+      <div class="modal-text">Gerenciador de estudos para concursos públicos. Meta semanal, acompanhamento temporal e visão por disciplina. Dados armazenados localmente via IndexedDB.</div>
       <div class="modal-actions"><button class="btn btn-secondary" onclick="Modal.fechar()">Fechar</button></div>
     `);
+  });
+};
+
+/* ===== ACOMPANHAMENTO (NOVO v3) ===== */
+Paginas.acompanhamento = async function(main) {
+  const concurso = await Concursos.ativo();
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
+  const sessoes = await Sessoes.listar(concurso.id);
+  const disciplinas = await Disciplinas.listar(concurso.id);
+  const mapaDisc = {};
+  for (const d of disciplinas ?? []) mapaDisc[d.id] = d;
+  const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
+  const distMap = {};
+  for (const d of distribuicao) distMap[d.disciplina.id] = d;
+
+  let tabAtiva = 'semanal';
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Acompanhamento</h1>
+      <p class="page-subtitle">${escapeHtml(concurso.nome)}</p>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="semanal">Semanal</button>
+      <button class="tab" data-tab="mensal">Mensal</button>
+      <button class="tab" data-tab="total">Total</button>
+      <button class="tab" data-tab="disciplinas">Disciplinas</button>
+    </div>
+    <div id="acomp-content"></div>`;
+
+  function sessoesPeriodo(inicio, fim) {
+    return (sessoes ?? []).filter(s => {
+      const d = new Date(s?.data);
+      return d >= inicio && d <= fim;
+    });
+  }
+
+  function segPorDisc(lista) {
+    const mapa = {};
+    for (const s of lista) {
+      const id = s?.disciplinaId;
+      mapa[id] = (mapa[id] || 0) + (s?.duracaoSegundos ?? 0);
+    }
+    return mapa;
+  }
+
+  function diasEstudadosCount(lista) {
+    const s = new Set();
+    for (const sess of lista) s.add(new Date(sess?.data).toDateString());
+    return s.size;
+  }
+
+  function renderTab(tab) {
+    tabAtiva = tab;
+    const cont = document.getElementById('acomp-content');
+    if (!cont) return;
+    if (tab === 'semanal') renderSemanal(cont);
+    else if (tab === 'mensal') renderMensal(cont);
+    else if (tab === 'total') renderTotal(cont);
+    else if (tab === 'disciplinas') renderDisciplinas(cont);
+  }
+
+  function renderSemanal(cont) {
+    const inicioSem = DataUtil.inicioSemana(new Date());
+    const fimSem = DataUtil.fimSemana(new Date());
+    const lista = sessoesPeriodo(inicioSem, fimSem);
+    const segTotal = lista.reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
+    const metaSem = (concurso.horasDiarias ?? 4) * 3600 * 7;
+    const pct = metaSem > 0 ? Math.min(100, Math.round((segTotal / metaSem) * 100)) : 0;
+    const diasEst = diasEstudadosCount(lista);
+    const diaDaSemana = new Date().getDay();
+    const diasPassados = diaDaSemana === 0 ? 7 : diaDaSemana;
+    const diasRest = 7 - diasPassados;
+    const segRest = Math.max(0, metaSem - segTotal);
+    const metaDiaria = diasRest > 0 ? segRest / diasRest : 0;
+    const porDisc = segPorDisc(lista);
+
+    let html = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Semana atual (${DataUtil.formatarData(inicioSem)} - ${DataUtil.formatarData(fimSem)})</div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(segTotal)}</div><div class="meta-resumo-label">Estudado</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaSem)}</div><div class="meta-resumo-label">Meta</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${pct}%</div><div class="meta-resumo-label">Concluído</div></div>
+        </div>
+        <div class="progress-bar" style="height:10px;margin:10px 0;"><div class="progress-bar-fill" style="width:${pct}%;background:${pct >= 100 ? '#4ade80' : pct >= 60 ? '#fbbf24' : '#e94560'};"></div></div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${diasEst}/${diasPassados}</div><div class="meta-resumo-label">Dias estudados</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaDiaria)}</div><div class="meta-resumo-label">Meta diária sugerida</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${lista.length}</div><div class="meta-resumo-label">Sessões</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Por disciplina (semana)</div>`;
+    for (const d of disciplinas) {
+      const seg = porDisc[d.id] || 0;
+      const metaDiscSem = (distMap[d.id]?.segundosSugeridos ?? 0) * 7;
+      const pctD = metaDiscSem > 0 ? Math.min(100, Math.round((seg / metaDiscSem) * 100)) : 0;
+      html += `<div class="acomp-disc-item">
+        <div class="acomp-disc-header"><span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span><strong>${escapeHtml(d.nome)}</strong><span class="acomp-status-badge" style="background:${pctD >= 100 ? '#4ade80' : pctD >= 60 ? '#fbbf24' : '#e94560'};">${pctD}%</span></div>
+        <div class="progress-bar" style="height:6px;margin:4px 0;"><div class="progress-bar-fill" style="width:${pctD}%;background-color:${escapeHtml(d.cor)};"></div></div>
+        <div class="text-dim" style="font-size:12px;">${TempoUtil.formatarHhMm(seg)} / ${TempoUtil.formatarHhMm(metaDiscSem)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  function renderMensal(cont) {
+    const inicioMes = DataUtil.inicioMes(new Date());
+    const fimMes = DataUtil.fimMes(new Date());
+    const lista = sessoesPeriodo(inicioMes, fimMes);
+    const segTotal = lista.reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
+    const diasNoMes = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    const metaMes = (concurso.horasDiarias ?? 4) * 3600 * diasNoMes;
+    const pct = metaMes > 0 ? Math.min(100, Math.round((segTotal / metaMes) * 100)) : 0;
+    const diasEst = diasEstudadosCount(lista);
+    const diaAtual = new Date().getDate();
+    const porDisc = segPorDisc(lista);
+
+    let html = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Mês atual (${DataUtil.formatarData(inicioMes)} - ${DataUtil.formatarData(fimMes)})</div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(segTotal)}</div><div class="meta-resumo-label">Estudado</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaMes)}</div><div class="meta-resumo-label">Meta mensal</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${pct}%</div><div class="meta-resumo-label">Concluído</div></div>
+        </div>
+        <div class="progress-bar" style="height:10px;margin:10px 0;"><div class="progress-bar-fill" style="width:${pct}%;background:${pct >= 100 ? '#4ade80' : pct >= 60 ? '#fbbf24' : '#e94560'};"></div></div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${diasEst}/${diaAtual}</div><div class="meta-resumo-label">Dias estudados</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${lista.length}</div><div class="meta-resumo-label">Sessões</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${lista.length > 0 ? TempoUtil.formatarHhMm(Math.round(segTotal / diasEst)) : '0min'}</div><div class="meta-resumo-label">Média/dia estudado</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Por disciplina (mês)</div>`;
+    for (const d of disciplinas) {
+      const seg = porDisc[d.id] || 0;
+      const metaDiscMes = (distMap[d.id]?.segundosSugeridos ?? 0) * diasNoMes;
+      const pctD = metaDiscMes > 0 ? Math.min(100, Math.round((seg / metaDiscMes) * 100)) : 0;
+      html += `<div class="acomp-disc-item">
+        <div class="acomp-disc-header"><span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span><strong>${escapeHtml(d.nome)}</strong><span class="acomp-status-badge" style="background:${pctD >= 100 ? '#4ade80' : pctD >= 60 ? '#fbbf24' : '#e94560'};">${pctD}%</span></div>
+        <div class="progress-bar" style="height:6px;margin:4px 0;"><div class="progress-bar-fill" style="width:${pctD}%;background-color:${escapeHtml(d.cor)};"></div></div>
+        <div class="text-dim" style="font-size:12px;">${TempoUtil.formatarHhMm(seg)} / ${TempoUtil.formatarHhMm(metaDiscMes)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  function renderTotal(cont) {
+    const segTotal = (sessoes ?? []).reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
+    const diasEst = diasEstudadosCount(sessoes ?? []);
+    const porDisc = segPorDisc(sessoes ?? []);
+    const mediaSegDia = diasEst > 0 ? Math.round(segTotal / diasEst) : 0;
+
+    let html = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Totais acumulados</div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(segTotal)}</div><div class="meta-resumo-label">Total estudado</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${(sessoes ?? []).length}</div><div class="meta-resumo-label">Sessões</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${diasEst}</div><div class="meta-resumo-label">Dias estudados</div></div>
+        </div>
+        <div class="meta-resumo" style="margin-top:8px;">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(mediaSegDia)}</div><div class="meta-resumo-label">Média por dia</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Total por disciplina</div>`;
+    for (const d of disciplinas) {
+      const seg = porDisc[d.id] || 0;
+      const pctD = segTotal > 0 ? Math.round((seg / segTotal) * 100) : 0;
+      html += `<div class="acomp-disc-item">
+        <div class="acomp-disc-header"><span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span><strong>${escapeHtml(d.nome)}</strong><span class="text-dim">${pctD}%</span></div>
+        <div class="progress-bar" style="height:6px;margin:4px 0;"><div class="progress-bar-fill" style="width:${pctD}%;background-color:${escapeHtml(d.cor)};"></div></div>
+        <div class="text-dim" style="font-size:12px;">${TempoUtil.formatarHhMm(seg)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  function renderDisciplinas(cont) {
+    const inicioSem = DataUtil.inicioSemana(new Date());
+    const fimSem = DataUtil.fimSemana(new Date());
+    const sessSem = sessoesPeriodo(inicioSem, fimSem);
+    const porDiscSem = segPorDisc(sessSem);
+    const porDiscTotal = segPorDisc(sessoes ?? []);
+
+    let html = '<div style="margin-top:12px;">';
+    for (const d of disciplinas) {
+      const dist = distMap[d.id];
+      const metaDiaria = dist?.segundosSugeridos ?? 0;
+      const metaSem = metaDiaria * 7;
+      const segSem = porDiscSem[d.id] || 0;
+      const segTotal = porDiscTotal[d.id] || 0;
+      const pctSem = metaSem > 0 ? Math.min(100, Math.round((segSem / metaSem) * 100)) : 0;
+      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? '';
+
+      let statusCor, statusLabel;
+      if (pctSem >= 100) { statusCor = '#4ade80'; statusLabel = 'No alvo'; }
+      else if (pctSem >= 60) { statusCor = '#fbbf24'; statusLabel = 'Atenção'; }
+      else { statusCor = '#e94560'; statusLabel = 'Atrasada'; }
+
+      html += `<div class="card" style="border-left:4px solid ${escapeHtml(d.cor)};margin-bottom:10px;">
+        <div class="acomp-disc-header" style="margin-bottom:6px;">
+          <span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span>
+          <strong>${escapeHtml(d.nome)}</strong>
+          <span class="acomp-status-badge" style="background:${statusCor};">${statusLabel}</span>
+        </div>
+        <div class="text-dim" style="font-size:12px;margin-bottom:6px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} · ${grauLabel}${d.eliminatoria ? ' · Eliminatória' : ''}</div>
+        <div class="meta-resumo">
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(segSem)}</div><div class="meta-resumo-label">Semana</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaSem)}</div><div class="meta-resumo-label">Meta sem.</div></div>
+          <div class="meta-resumo-item"><div class="meta-resumo-valor">${pctSem}%</div><div class="meta-resumo-label">Progresso</div></div>
+        </div>
+        <div class="progress-bar" style="height:6px;margin:6px 0;"><div class="progress-bar-fill" style="width:${pctSem}%;background-color:${escapeHtml(d.cor)};"></div></div>
+        <div class="text-dim" style="font-size:12px;">Total acumulado: ${TempoUtil.formatarHhMm(segTotal)} · Meta diária: ~${TempoUtil.formatarHhMm(metaDiaria)}</div>
+      </div>`;
+    }
+    html += '</div>';
+    cont.innerHTML = html;
+  }
+
+  renderTab('semanal');
+  document.querySelectorAll('.tabs .tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tabs .tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      renderTab(t.dataset.tab);
+    });
   });
 };
 
@@ -1150,7 +1442,6 @@ Paginas.configuracoes = async function(main) {
       <button class="btn btn-sm btn-danger" id="btn-limpar-dados">Limpar todos os dados</button>
     </div>`;
 
-  // Render disciplinas
   function renderDisciplinas() {
     const cont = document.getElementById('lista-disciplinas');
     if (!cont) return;
@@ -1178,7 +1469,6 @@ Paginas.configuracoes = async function(main) {
   }
   renderDisciplinas();
 
-  // Salvar concurso
   document.getElementById('btn-salvar-concurso')?.addEventListener('click', async () => {
     try {
       await Concursos.atualizar(concurso.id, {
@@ -1197,7 +1487,6 @@ Paginas.configuracoes = async function(main) {
     if (concurso) abrirModalEditarDisciplina(null, concurso);
   });
 
-  // Backup
   document.getElementById('btn-exportar')?.addEventListener('click', async () => {
     try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
   });
@@ -1211,7 +1500,6 @@ Paginas.configuracoes = async function(main) {
     catch (e) { Toast.erro('Erro ao compartilhar'); }
   });
 
-  // Limpar dados
   document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
     Modal.abrir(`
       <div class="modal-title">⚠️ Limpar todos os dados</div>
@@ -1356,7 +1644,263 @@ async function abrirModalEditarDisciplina(disc, concurso) {
     document.getElementById('disc-confirmar-remover')?.addEventListener('click', async () => {
       try {
         await Disciplinas.remover(disc.id);
-        // Limpar sessões, revisões e questões da disciplina
+        const sessoes = await db.sessoes.where({ disciplinaId: disc.id }).toArray();
+        for (const s of sessoes) await db.sessoes.delete(s.id);
+        const revisoes = await db.revisoes.where({ disciplinaId: disc.id }).toArray();
+        for (const r of revisoes) await db.revisoes.delete(r.id);
+        const questoes = await db.questoes.where({ disciplinaId: disc.id }).toArray();
+        for (const q of questoes) await db.questoes.delete(q.id);
+        Modal.fechar(); Toast.sucesso('Disciplina removida!'); Router.ir('configuracoes');
+      } catch (e) { Toast.erro('Erro ao remover.'); }
+    });
+  });
+}
+window.abrirModalEditarDisciplina = abrirModalEditarDisciplina;
+
+/* ===== CONFIGURAÇÕES ===== */
+Paginas.configuracoes = async function(main) {
+  const concurso = await Concursos.ativo();
+  const disciplinas = concurso ? await Disciplinas.listar(concurso.id) : [];
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Configurações</h1>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Concurso</div>
+      ${concurso ? `
+      <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" value="${escapeHtml(concurso.nome)}" /></div>
+      <div class="form-group"><label>Data da prova</label><input type="date" id="cfg-data" value="${concurso.dataProva ? new Date(concurso.dataProva).toISOString().split('T')[0] : ''}" /></div>
+      <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="cfg-horas" min="1" max="18" value="${concurso.horasDiarias ?? 4}" /></div>
+      <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="500" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
+      <button class="btn btn-primary btn-sm" id="btn-salvar-concurso">Salvar concurso</button>
+      ` : `<button class="btn btn-primary" id="btn-criar-concurso">Criar concurso</button>`}
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Disciplinas</div>
+      <div id="lista-disciplinas"></div>
+      ${concurso ? '<button class="btn btn-sm btn-primary mt-12" id="btn-add-disciplina">+ Adicionar disciplina</button>' : ''}
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Backup</div>
+      <div class="btn-row">
+        <button class="btn btn-sm btn-primary" id="btn-exportar">Exportar</button>
+        <button class="btn btn-sm btn-secondary" id="btn-importar-trigger">Importar</button>
+        <button class="btn btn-sm btn-secondary" id="btn-compartilhar">Compartilhar</button>
+      </div>
+      <input type="file" id="input-importar" accept=".json" style="display:none;" />
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title" style="color:var(--danger);">Zona de perigo</div>
+      <button class="btn btn-sm btn-danger" id="btn-limpar-dados">Limpar todos os dados</button>
+    </div>`;
+
+  function renderDisciplinas() {
+    const cont = document.getElementById('lista-disciplinas');
+    if (!cont) return;
+    if (disciplinas.length === 0) { cont.innerHTML = '<div class="text-dim">Nenhuma disciplina cadastrada.</div>'; return; }
+    cont.innerHTML = disciplinas.map(d => {
+      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? 'Médio';
+      const pontos = (d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1);
+      return `<div class="discipline-item" data-id="${d.id}">
+        <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d.cor)}"></span>
+        <div class="item-content">
+          <div class="item-title">${escapeHtml(d.nome)}</div>
+          <div class="item-subtitle">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${pontos}pts · ${grauLabel}${d.eliminatoria ? ` · Elim. ${d.percentualMinimo ?? 50}%` : ''}</div>
+        </div>
+        <button class="btn-icon btn-edit-disc" data-id="${d.id}" title="Editar">✏️</button>
+      </div>`;
+    }).join('');
+
+    cont.querySelectorAll('.btn-edit-disc').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = parseInt(btn.dataset.id);
+        const disc = disciplinas.find(d => d.id === id);
+        if (disc) abrirModalEditarDisciplina(disc, concurso);
+      });
+    });
+  }
+  renderDisciplinas();
+
+  document.getElementById('btn-salvar-concurso')?.addEventListener('click', async () => {
+    try {
+      await Concursos.atualizar(concurso.id, {
+        nome: document.getElementById('cfg-nome')?.value?.trim() || concurso.nome,
+        dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : concurso.dataProva,
+        horasDiarias: parseInt(document.getElementById('cfg-horas')?.value) || concurso.horasDiarias,
+        totalQuestoes: parseInt(document.getElementById('cfg-total-questoes')?.value) || null
+      });
+      Toast.sucesso('Concurso salvo!');
+    } catch (e) { Toast.erro('Erro ao salvar.'); }
+  });
+
+  document.getElementById('btn-criar-concurso')?.addEventListener('click', () => abrirModalSetupConcurso());
+
+  document.getElementById('btn-add-disciplina')?.addEventListener('click', () => {
+    if (concurso) abrirModalEditarDisciplina(null, concurso);
+  });
+
+  document.getElementById('btn-exportar')?.addEventListener('click', async () => {
+    try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
+  });
+  document.getElementById('btn-importar-trigger')?.addEventListener('click', () => document.getElementById('input-importar')?.click());
+  document.getElementById('input-importar')?.addEventListener('change', async (e) => {
+    try { await Backup.importarDeArquivo(e.target.files?.[0]); Toast.sucesso('Dados importados!'); Router.ir('dashboard'); }
+    catch (err) { Toast.erro(err?.message ?? 'Erro ao importar'); }
+  });
+  document.getElementById('btn-compartilhar')?.addEventListener('click', async () => {
+    try { const r = await Backup.compartilhar(); if (r?.ok && !r?.cancelado) Toast.sucesso('Backup compartilhado!'); }
+    catch (e) { Toast.erro('Erro ao compartilhar'); }
+  });
+
+  document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
+    Modal.abrir(`
+      <div class="modal-title">⚠️ Limpar todos os dados</div>
+      <div class="modal-text">Essa ação é irreversível. Digite <strong>APAGAR</strong> para confirmar:</div>
+      <div class="form-group"><input type="text" id="input-confirmar-limpar" placeholder="APAGAR" /></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+        <button class="btn btn-danger" id="btn-confirmar-limpar">Limpar</button>
+      </div>
+    `);
+    document.getElementById('btn-confirmar-limpar')?.addEventListener('click', async () => {
+      if (document.getElementById('input-confirmar-limpar')?.value?.trim() !== 'APAGAR') { Toast.aviso('Digite APAGAR para confirmar.'); return; }
+      try {
+        await db.concursos.clear(); await db.disciplinas.clear(); await db.topicos.clear();
+        await db.sessoes.clear(); await db.revisoes.clear(); await db.cicloConfig.clear(); await db.questoes.clear();
+        Modal.fechar(); Toast.sucesso('Dados limpos!'); Router.ir('dashboard');
+      } catch (e) { Toast.erro('Erro ao limpar dados.'); }
+    });
+  });
+};
+
+/* ============ Modal: Setup Concurso ============ */
+async function abrirModalSetupConcurso() {
+  Modal.abrir(`
+    <div class="modal-title">🎯 Configurar Concurso</div>
+    <div class="form-group"><label>Nome do concurso</label><input type="text" id="setup-nome" placeholder="Ex: TRF3 - Analista" /></div>
+    <div class="form-group"><label>Data da prova</label><input type="date" id="setup-data" /></div>
+    <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="setup-horas" min="1" max="18" value="6" /></div>
+    <div class="form-group"><label>Total de questões da prova</label><input type="number" id="setup-total-q" min="1" max="500" placeholder="Ex: 120" /></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+      <button class="btn btn-primary" id="setup-salvar">Criar</button>
+    </div>
+  `, { fecharNoFundo: false });
+
+  document.getElementById('setup-salvar')?.addEventListener('click', async () => {
+    const nome = document.getElementById('setup-nome')?.value?.trim();
+    const dataVal = document.getElementById('setup-data')?.value;
+    const horas = parseInt(document.getElementById('setup-horas')?.value) || 6;
+    const totalQ = parseInt(document.getElementById('setup-total-q')?.value) || null;
+    if (!nome) { Toast.aviso('Informe o nome do concurso.'); return; }
+    try {
+      await Concursos.criar({
+        nome,
+        dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null,
+        horasDiarias: horas,
+        totalQuestoes: totalQ
+      });
+      Modal.fechar();
+      Toast.sucesso('Concurso criado!');
+      const nav = document.getElementById('bottom-nav');
+      if (nav) nav.style.display = 'flex';
+      Router.ir('configuracoes');
+    } catch (e) { Toast.erro('Erro ao criar concurso.'); }
+  });
+}
+window.abrirModalSetupConcurso = abrirModalSetupConcurso;
+
+/* ============ Modal: Editar/Criar Disciplina ============ */
+async function abrirModalEditarDisciplina(disc, concurso) {
+  const isNovo = !disc;
+  const corPadrao = CORES_PADRAO[Math.floor(Math.random() * CORES_PADRAO.length)];
+
+  Modal.abrir(`
+    <div class="modal-title">${isNovo ? '+ Nova Disciplina' : 'Editar Disciplina'}</div>
+    <div class="form-group"><label>Nome</label><input type="text" id="disc-nome" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Constitucional" /></div>
+    <div class="form-group"><label>Nº de questões na prova</label><input type="number" id="disc-num-questoes" min="1" max="200" value="${disc?.numQuestoes ?? 10}" /></div>
+    <div class="form-group"><label>Peso por questão</label><input type="number" id="disc-peso-questao" min="1" max="10" value="${disc?.pesoQuestao ?? 1}" /></div>
+    <div class="form-group">
+      <label>Grau de conhecimento</label>
+      <select id="disc-grau">
+        ${[1,2,3,4,5].map(g => `<option value="${g}" ${(disc?.grauConhecimento ?? 3) === g ? 'selected' : ''}>${g} - ${DistribuicaoEstudo.LABELS_CONHECIMENTO[g]}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Cor</label>
+      <input type="color" id="disc-cor" value="${disc?.cor ?? corPadrao}" />
+    </div>
+    <div class="form-group">
+      <div class="row" style="border:none;padding:0;">
+        <label style="margin:0;">Eliminatória?</label>
+        <div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-elim-toggle"></div>
+      </div>
+    </div>
+    <div class="form-group" id="disc-elim-percentual-wrap" style="display:${disc?.eliminatoria ? 'block' : 'none'};">
+      <label>Percentual mínimo de acerto (%)</label>
+      <input type="number" id="disc-percentual-min" min="1" max="100" value="${disc?.percentualMinimo ?? 50}" />
+    </div>
+    <div class="modal-actions">
+      ${!isNovo ? '<button class="btn btn-danger btn-sm" id="disc-remover">Remover</button>' : ''}
+      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+      <button class="btn btn-primary" id="disc-salvar">Salvar</button>
+    </div>
+  `);
+
+  let eliminatoria = disc?.eliminatoria ?? false;
+  document.getElementById('disc-elim-toggle')?.addEventListener('click', () => {
+    eliminatoria = !eliminatoria;
+    document.getElementById('disc-elim-toggle')?.classList.toggle('active', eliminatoria);
+    document.getElementById('disc-elim-percentual-wrap').style.display = eliminatoria ? 'block' : 'none';
+  });
+
+  document.getElementById('disc-salvar')?.addEventListener('click', async () => {
+    const nome = document.getElementById('disc-nome')?.value?.trim();
+    if (!nome) { Toast.aviso('Informe o nome.'); return; }
+    const dados = {
+      concursoId: concurso.id,
+      nome,
+      numQuestoes: parseInt(document.getElementById('disc-num-questoes')?.value) || 10,
+      pesoQuestao: parseInt(document.getElementById('disc-peso-questao')?.value) || 1,
+      grauConhecimento: parseInt(document.getElementById('disc-grau')?.value) || 3,
+      cor: document.getElementById('disc-cor')?.value ?? corPadrao,
+      eliminatoria,
+      percentualMinimo: eliminatoria ? (parseInt(document.getElementById('disc-percentual-min')?.value) || 50) : null,
+      ordemCiclo: disc?.ordemCiclo ?? 0
+    };
+    try {
+      if (isNovo) {
+        const discs = await Disciplinas.listar(concurso.id);
+        dados.ordemCiclo = discs.length;
+        await Disciplinas.criar(dados);
+        Toast.sucesso('Disciplina adicionada!');
+      } else {
+        await Disciplinas.atualizar(disc.id, dados);
+        Toast.sucesso('Disciplina atualizada!');
+      }
+      Modal.fechar();
+      Router.ir('configuracoes');
+    } catch (e) { Toast.erro('Erro ao salvar disciplina.'); }
+  });
+
+  document.getElementById('disc-remover')?.addEventListener('click', async () => {
+    if (!disc) return;
+    Modal.abrir(`
+      <div class="modal-title">Remover disciplina?</div>
+      <div class="modal-text">Isso removerá "${escapeHtml(disc.nome)}" e todas as sessões, revisões e questões associadas.</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+        <button class="btn btn-danger" id="disc-confirmar-remover">Remover</button>
+      </div>
+    `);
+    document.getElementById('disc-confirmar-remover')?.addEventListener('click', async () => {
+      try {
+        await Disciplinas.remover(disc.id);
         const sessoes = await db.sessoes.where({ disciplinaId: disc.id }).toArray();
         for (const s of sessoes) await db.sessoes.delete(s.id);
         const revisoes = await db.revisoes.where({ disciplinaId: disc.id }).toArray();
@@ -1426,7 +1970,6 @@ async function abrirModalFinalizar(dados) {
         notas
       });
 
-      // Criar revisões se for sessão de conteúdo novo
       if (dados.tipo === 'Novo') {
         await Revisoes.criarParaSessao({
           id: sessaoId, disciplinaId: dados.disciplinaId,
@@ -1435,13 +1978,11 @@ async function abrirModalFinalizar(dados) {
         });
       }
 
-      // Se é revisão, marcar a correspondente como feita
       if (dados.tipo?.startsWith('Revisão')) {
         const rev = await Revisoes.encontrarRevisaoCorrespondente(dados.disciplinaId, dados.topico, dados.tipo);
         if (rev) await Revisoes.marcarFeita(rev.id);
       }
 
-      // Avançar ciclo
       const concurso = await Concursos.ativo();
       if (concurso) await Ciclo.avancarPosicao(concurso.id);
 
@@ -1462,7 +2003,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const concurso = await Concursos.ativo();
   if (nav) nav.style.display = concurso ? 'flex' : 'none';
 
-  // Navegação
   nav?.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', () => {
       Router.ir(item.dataset.page);

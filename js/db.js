@@ -66,8 +66,36 @@ const DataUtil = {
     const d = new Date(data);
     d.setHours(23,59,59,999);
     return d;
+  },
+  inicioSemana(data) {
+    const d = new Date(data);
+    const dia = d.getDay();
+    const diff = dia === 0 ? 6 : dia - 1;
+    d.setDate(d.getDate() - diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  },
+  fimSemana(data) {
+    const ini = this.inicioSemana(data);
+    const d = new Date(ini);
+    d.setDate(d.getDate() + 6);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  },
+  inicioMes(data) {
+    const d = new Date(data);
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  },
+  fimMes(data) {
+    const d = new Date(data);
+    d.setMonth(d.getMonth() + 1, 0);
+    d.setHours(23, 59, 59, 999);
+    return d;
   }
 };
+
 
 /* ===== Helpers de tempo ===== */
 const TempoUtil = {
