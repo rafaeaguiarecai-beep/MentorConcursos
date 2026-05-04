@@ -980,3 +980,154 @@ label {
   .nav-label { font-size: 9px; }
   .nav-icon { font-size: 20px; }
 }
+
+/* ====== v2: Autocomplete ====== */
+.autocomplete-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background-color: var(--highlight);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 50;
+  display: none;
+  box-shadow: var(--shadow-lg);
+}
+
+.autocomplete-item {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.15s;
+}
+
+.autocomplete-item:last-child { border-bottom: none; }
+.autocomplete-item:hover { background-color: var(--card); }
+
+/* ====== v2: Distribuição de tempo ====== */
+.distribuicao-item {
+  margin-bottom: 14px;
+}
+
+.distribuicao-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.distribuicao-nome {
+  flex: 1;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.distribuicao-tempo {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.distribuicao-detalhe {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* ====== v2: Alertas eliminatórias ====== */
+.eliminatoria-alerta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.eliminatoria-alerta:last-child { border-bottom: none; }
+
+/* ====== v2: Questões - Resultado Grid ====== */
+.resultado-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.resultado-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 16px 10px;
+  border-radius: var(--radius);
+  background-color: var(--highlight);
+  border: 2px solid var(--border);
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.resultado-btn:hover { border-color: var(--accent); transform: translateY(-2px); }
+.resultado-btn:active { transform: scale(0.96); }
+
+.resultado-btn.acertou:hover { border-color: var(--success); }
+.resultado-btn.acertou-duvida:hover { border-color: var(--warning); }
+.resultado-btn.errou:hover { border-color: var(--danger); }
+.resultado-btn.errou-desatencao:hover { border-color: #ff9149; }
+
+.resultado-icon { font-size: 28px; }
+.resultado-label { font-size: 12px; font-weight: 500; color: var(--text-dim); text-align: center; }
+
+/* ====== v2: Feedback de questão ====== */
+.q-feedback {
+  text-align: center;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  animation: fadeIn 0.3s;
+}
+
+.q-feedback-acertou { background-color: rgba(74, 222, 128, 0.15); color: var(--success); }
+.q-feedback-acertou_duvida { background-color: rgba(251, 191, 36, 0.15); color: var(--warning); }
+.q-feedback-errou { background-color: rgba(239, 68, 68, 0.15); color: var(--danger); }
+.q-feedback-errou_desatencao { background-color: rgba(255, 145, 73, 0.15); color: #ff9149; }
+
+/* ====== v2: Estatísticas de questões ====== */
+.stat-disciplina {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-disciplina:last-child { border-bottom: none; }
+
+.stat-disc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.stat-disc-header .text-dim { margin-left: auto; }
+
+.stat-disc-barras { margin-bottom: 4px; }
+
+.stat-mini-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: var(--bg);
+}
+
+.stat-mini-fill {
+  height: 100%;
+  transition: width 0.3s;
+}
+
+.stat-disc-detalhe {
+  font-size: 11px;
+  color: var(--text-dim);
+}
