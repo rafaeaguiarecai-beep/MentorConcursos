@@ -71,12 +71,20 @@ const Router = {
   paginaAtual: 'dashboard',
   parametros: {},
 
-  ir(pagina, parametros = {}) {
+  async ir(pagina, parametros = {}) {
+    const paginaAtual = this.paginaAtual;
+    const saindoDeEstudar = paginaAtual === 'estudar' && pagina !== 'estudar';
+    if (saindoDeEstudar) {
+      const podeSair = await confirmarAbandonoSessaoEmAndamento(pagina);
+      if (!podeSair) return;
+      Timer.parar();
+      Timer.limparEstadoPersistido();
+      const concursoAtivo = await Concursos.ativo();
+      if (concursoAtivo?.id) limparRascunhoSessaoEstudo(concursoAtivo.id);
+      atualizarTituloTimer();
+    }
     this.paginaAtual = pagina;
     this.parametros = parametros ?? {};
-    if (pagina !== 'estudar' && Timer.rodando) {
-      Timer.parar();
-    }
     this.atualizarNav();
     Paginas.renderizar(pagina);
   },
@@ -105,6 +113,145 @@ function escapeHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 window.escapeHtml = escapeHtml;
+
+
+const InputSanitizer = {
+  texto(valor, { max = 120, obrigatorio = false } = {}) {
+    const limpo = String(valor ?? '').replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (obrigatorio && !limpo) throw new Error('Campo obrigatório.');
+    if (limpo.length > max) throw new Error(`Texto deve ter no máximo ${max} caracteres.`);
+    return limpo;
+  },
+  inteiro(valor, { min = 0, max = 999999, fallback = 0 } = {}) {
+    const n = Number.parseInt(valor, 10);
+    if (Number.isNaN(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  },
+  percentual(valor, { fallback = 50 } = {}) {
+    return this.inteiro(valor, { min: 1, max: 100, fallback });
+  },
+  corHex(valor, { fallback = '#e94560' } = {}) {
+    const cor = String(valor ?? fallback).trim();
+    return /^#[0-9a-fA-F]{6}$/.test(cor) ? cor : fallback;
+  },
+  dataISOouNull(valor) {
+    if (!valor) return null;
+    const d = new Date(valor);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+};
+window.InputSanitizer = InputSanitizer;
+
+const CHAVE_RASCUNHO_PREFIXO = 'mentor_estudo_rascunho_';
+let swRegistrationRef = null;
+
+function chaveRascunhoSessao(concursoId) { return `${CHAVE_RASCUNHO_PREFIXO}${concursoId}`; }
+
+function salvarRascunhoSessaoEstudo({ concursoId, disciplinaId, topico, tipo, duracaoMin }) {
+  if (!concursoId) return;
+  const payload = {
+    disciplinaId: Number.parseInt(disciplinaId, 10) || null,
+    topico: InputSanitizer.texto(topico, { max: 200 }),
+    tipo: InputSanitizer.texto(tipo, { max: 20 }) || 'Novo',
+    duracaoMin: InputSanitizer.inteiro(duracaoMin, { min: 1, max: 600, fallback: 45 }),
+    atualizadoEm: new Date().toISOString()
+  };
+  try { localStorage.setItem(chaveRascunhoSessao(concursoId), JSON.stringify(payload)); } catch {}
+}
+
+function carregarRascunhoSessaoEstudo(concursoId) {
+  if (!concursoId) return null;
+  try {
+    const bruto = localStorage.getItem(chaveRascunhoSessao(concursoId));
+    if (!bruto) return null;
+    return JSON.parse(bruto);
+  } catch { return null; }
+}
+
+function limparRascunhoSessaoEstudo(concursoId) {
+  if (!concursoId) return;
+  try { localStorage.removeItem(chaveRascunhoSessao(concursoId)); } catch {}
+}
+
+async function confirmarAbandonoSessaoEmAndamento(paginaDestino) {
+  const estado = Timer.estado();
+  if (!(estado?.rodando || estado?.pausado) || (estado?.totalDecorrido ?? 0) <= 0) return true;
+
+  return new Promise((resolve) => {
+    Modal.abrir(`
+      <div class="modal-title">⚠️ Sessão em andamento</div>
+      <div class="modal-text">Há uma sessão de estudo em andamento. Sair para <strong>${escapeHtml(paginaDestino)}</strong> irá descartar o progresso não salvo.</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="cancelar-sair-timer">Continuar estudando</button>
+        <button class="btn btn-danger" id="confirmar-sair-timer">Sair e descartar</button>
+      </div>
+    `, { fecharNoFundo: false });
+
+    document.getElementById('cancelar-sair-timer')?.addEventListener('click', () => { Modal.fechar(); resolve(false); });
+    document.getElementById('confirmar-sair-timer')?.addEventListener('click', () => { Modal.fechar(); resolve(true); });
+  });
+}
+
+function atualizarTituloTimer() {
+  const estado = Timer.estado();
+  if (estado?.rodando || estado?.pausado) {
+    const tempo = estado?.extra > 0 ? `+${TempoUtil.formatarMmSs(estado.extra)}` : TempoUtil.formatarMmSs(estado.restante);
+    document.title = `${tempo} · MentorConcursos`;
+    return;
+  }
+  document.title = 'MentorConcursos';
+}
+
+function exibirToastAtualizacaoSW(registration) {
+  const cont = document.getElementById('toast-container');
+  if (!cont) return;
+  const t = document.createElement('div');
+  t.className = 'toast warning';
+  t.innerHTML = `Nova versão disponível — <button class="btn btn-sm btn-primary" id="btn-sw-atualizar">Atualizar agora</button>`;
+  cont.appendChild(t);
+  document.getElementById('btn-sw-atualizar')?.addEventListener('click', () => {
+    const worker = registration?.waiting;
+    worker?.postMessage({ type: 'SKIP_WAITING' });
+  });
+}
+
+async function registrarServiceWorkerConfiavel() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    swRegistrationRef = await navigator.serviceWorker.register('sw.js');
+    if (swRegistrationRef?.waiting) exibirToastAtualizacaoSW(swRegistrationRef);
+
+    swRegistrationRef.addEventListener('updatefound', () => {
+      const novoWorker = swRegistrationRef.installing;
+      if (!novoWorker) return;
+      novoWorker.addEventListener('statechange', () => {
+        if (novoWorker.state === 'installed' && navigator.serviceWorker.controller) {
+          exibirToastAtualizacaoSW(swRegistrationRef);
+        }
+      });
+    });
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.location.reload();
+    });
+  } catch (e) {
+    console.warn('SW falhou:', e);
+  }
+}
+
+async function verificarIntegridadeBanco() {
+  const tabelas = window.BACKUP_TABLES ?? [];
+  const resumo = [];
+  for (const t of tabelas) {
+    const total = await db[t].count();
+    resumo.push({ tabela: t, total });
+  }
+
+  const concursos = await Concursos.listarTodos?.() ?? [];
+  const conflitos = concursos.length > 1;
+  return { resumo, conflitos, totalConcursos: concursos.length };
+}
+
 
 /* Autocomplete simples reutilizável */
 function setupAutocomplete(inputId, getSuggestionsFn) {
@@ -443,7 +590,7 @@ const Paginas = {
     setTimeout(() => Graficos.barrasHorasPorDisciplina('chart-disciplinas', concurso.id), 50);
   },
 
-  /* ===== ESTUDAR ===== */
+    /* ===== ESTUDAR ===== */
   async estudar(main) {
     const concurso = await Concursos.ativo();
     if (!concurso) {
@@ -458,28 +605,26 @@ const Paginas = {
 
     const cfg = await Ciclo.obter(concurso.id);
     let disciplinaSugeridaId = null;
-    if (cfg && cfg?.cicloJSON) {
+    if (cfg?.cicloJSON) {
       let ciclo = [];
       try { ciclo = JSON.parse(cfg.cicloJSON); } catch {}
-      if (ciclo.length > 0) {
-        disciplinaSugeridaId = ciclo[(cfg?.posicaoAtual ?? 0) % ciclo.length];
-      }
+      if (ciclo.length > 0) disciplinaSugeridaId = ciclo[(cfg?.posicaoAtual ?? 0) % ciclo.length];
     }
     if (!disciplinaSugeridaId) disciplinaSugeridaId = disciplinas[0]?.id;
 
+    const rascunho = carregarRascunhoSessaoEstudo(concurso.id);
     const params = Router.parametros ?? {};
     if (params?.disciplinaId) disciplinaSugeridaId = params.disciplinaId;
-    const tipoPre = params?.tipo ?? 'Novo';
-    const topicoPre = params?.topico ?? '';
 
-    let disciplinaSelId = disciplinaSugeridaId;
+    const tipoPre = params?.tipo ?? rascunho?.tipo ?? 'Novo';
+    const topicoPre = params?.topico ?? rascunho?.topico ?? '';
+    let disciplinaSelId = params?.disciplinaId ?? rascunho?.disciplinaId ?? disciplinaSugeridaId;
     let tipoSelecionado = tipoPre;
     Router.parametros = {};
 
-    // Tempo sugerido pela distribuição
     const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
     const distDisc = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
-    const minutosSugeridos = distDisc ? Math.max(5, Math.round(distDisc.segundosSugeridos / 60)) : 45;
+    const minutosSugeridos = rascunho?.duracaoMin ?? (distDisc ? Math.max(5, Math.round(distDisc.segundosSugeridos / 60)) : 45);
 
     main.innerHTML = `
       <div class="page-header">
@@ -498,7 +643,7 @@ const Paginas = {
 
       <div class="form-group">
         <label>Tópico estudado</label>
-        <input type="text" id="in-topico" placeholder="Ex: Lei 8112 - Posse e exercício" value="${escapeHtml(topicoPre)}" autocomplete="off" />
+        <input type="text" id="in-topico" maxlength="200" placeholder="Ex: Lei 8112 - Posse e exercício" value="${escapeHtml(topicoPre)}" autocomplete="off" />
       </div>
 
       <div class="form-group">
@@ -548,48 +693,16 @@ const Paginas = {
       const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? '';
       const metaSemanalDisc = dist ? dist.segundosSugeridos * 7 : 0;
       card.style.backgroundColor = d?.cor ?? '#e94560';
-      card.innerHTML = `
-        <div class="estudar-discipline-label">Próxima no ciclo</div>
+      card.innerHTML = `<div class="estudar-discipline-label">Próxima no ciclo</div>
         <div class="estudar-discipline-name">${escapeHtml(d?.nome ?? '-')}</div>
-        <div class="estudar-discipline-label" style="margin-top:4px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) + '/dia · ~' + TempoUtil.formatarHhMm(metaSemanalDisc) + '/sem' : ''}</div>
-      `;
+        <div class="estudar-discipline-label" style="margin-top:4px;">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${(d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1)}pts · ${grauLabel}${dist ? ' · ~' + TempoUtil.formatarHhMm(dist.segundosSugeridos) + '/dia · ~' + TempoUtil.formatarHhMm(metaSemanalDisc) + '/sem' : ''}</div>`;
     };
     renderCardDisc();
 
-    // Autocomplete de tópicos
-    setupAutocomplete('in-topico', async () => {
-      return await Questoes.topicosUsados(disciplinaSelId);
-    });
+    setupAutocomplete('in-topico', async () => await Questoes.topicosUsados(disciplinaSelId));
 
     const sel = document.getElementById('sel-disciplina');
-    sel?.addEventListener('change', () => {
-      disciplinaSelId = parseInt(sel.value);
-      renderCardDisc();
-      const novaDist = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
-      if (novaDist && !Timer.rodando && !Timer.pausado) {
-        const novosMin = Math.max(5, Math.round(novaDist.segundosSugeridos / 60));
-        const inDur = document.getElementById('in-duracao');
-        if (inDur) inDur.value = novosMin;
-        Timer.setDuracao(novosMin);
-        atualizarUITimer();
-      }
-    });
-
-    document.querySelectorAll('#pills-tipo .pill').forEach(p => {
-      p.addEventListener('click', () => {
-        document.querySelectorAll('#pills-tipo .pill').forEach(x => x.classList.remove('active'));
-        p.classList.add('active');
-        tipoSelecionado = p.dataset.tipo;
-      });
-    });
-
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission?.().catch(() => {});
-    }
-
-    /* Timer integration */
-    Timer.off('tick'); Timer.off('iniciar'); Timer.off('pausar'); Timer.off('retomar'); Timer.off('reset');
-
+    const inTopico = document.getElementById('in-topico');
     const inDur = document.getElementById('in-duracao');
     const btnIniciar = document.getElementById('btn-iniciar');
     const btnResetar = document.getElementById('btn-resetar');
@@ -599,24 +712,67 @@ const Paginas = {
     const elState = document.getElementById('timer-state');
     const elProg = document.getElementById('timer-progress');
 
-    Timer.init(parseInt(inDur?.value) || minutosSugeridos);
+    const salvarDraftUI = () => {
+      salvarRascunhoSessaoEstudo({
+        concursoId: concurso.id,
+        disciplinaId: disciplinaSelId,
+        topico: inTopico?.value,
+        tipo: tipoSelecionado,
+        duracaoMin: inDur?.value
+      });
+    };
+
+    sel?.addEventListener('change', () => {
+      disciplinaSelId = parseInt(sel.value, 10);
+      renderCardDisc();
+      const novaDist = distribuicao.find(d => d.disciplina.id === disciplinaSelId);
+      if (novaDist && !Timer.rodando && !Timer.pausado) {
+        const novosMin = Math.max(5, Math.round(novaDist.segundosSugeridos / 60));
+        if (inDur) inDur.value = novosMin;
+        Timer.setDuracao(novosMin);
+      }
+      salvarDraftUI();
+      atualizarUITimer();
+    });
+
+    inTopico?.addEventListener('input', salvarDraftUI);
+
+    document.querySelectorAll('#pills-tipo .pill').forEach(p => {
+      p.addEventListener('click', () => {
+        document.querySelectorAll('#pills-tipo .pill').forEach(x => x.classList.remove('active'));
+        p.classList.add('active');
+        tipoSelecionado = p.dataset.tipo;
+        salvarDraftUI();
+      });
+    });
+
+    Timer.off('tick'); Timer.off('iniciar'); Timer.off('pausar'); Timer.off('retomar'); Timer.off('reset');
+
+    const restaurou = Timer.carregarEstado();
+    if (!restaurou || !(Timer.estado()?.rodando || Timer.estado()?.pausado || (Timer.estado()?.totalDecorrido ?? 0) > 0)) {
+      Timer.init(parseInt(inDur?.value, 10) || minutosSugeridos);
+    } else if (inDur) {
+      inDur.value = String(Math.round((Timer.estado()?.duracaoInicial ?? minutosSugeridos * 60) / 60));
+    }
 
     inDur?.addEventListener('input', () => {
-      const v = parseInt(inDur.value);
-      if (Timer.setDuracao(v)) atualizarUITimer();
+      if (Timer.setDuracao(parseInt(inDur.value, 10))) {
+        salvarDraftUI();
+        atualizarUITimer();
+      }
     });
 
     document.getElementById('btn-menos5')?.addEventListener('click', () => {
-      if (Timer.ajustar(-5)) { if (inDur) inDur.value = Timer.duracaoInicial / 60; atualizarUITimer(); }
+      if (Timer.ajustar(-5)) { if (inDur) inDur.value = String(Timer.duracaoInicial / 60); salvarDraftUI(); atualizarUITimer(); }
     });
     document.getElementById('btn-mais5')?.addEventListener('click', () => {
-      if (Timer.ajustar(5)) { if (inDur) inDur.value = Timer.duracaoInicial / 60; atualizarUITimer(); }
+      if (Timer.ajustar(5)) { if (inDur) inDur.value = String(Timer.duracaoInicial / 60); salvarDraftUI(); atualizarUITimer(); }
     });
 
     document.querySelectorAll('.timer-preset').forEach(b => {
       b.addEventListener('click', () => {
-        const m = parseInt(b.dataset.min);
-        if (Timer.setDuracao(m)) { if (inDur) inDur.value = m; atualizarUITimer(); }
+        const m = parseInt(b.dataset.min, 10);
+        if (Timer.setDuracao(m)) { if (inDur) inDur.value = String(m); salvarDraftUI(); atualizarUITimer(); }
       });
     });
 
@@ -639,7 +795,9 @@ const Paginas = {
       else if (e.pausado) { elState.textContent = 'Pausado'; btnIniciar.textContent = 'RETOMAR'; btnIniciar.classList.remove('paused'); }
       else { elState.textContent = 'Pronto'; btnIniciar.textContent = 'INICIAR'; btnIniciar.classList.remove('paused'); }
       controlesExtras.style.display = (e.rodando || e.pausado || e.totalDecorrido > 0) ? 'flex' : 'none';
+      atualizarTituloTimer();
     }
+
     atualizarUITimer();
     Timer.on('tick', atualizarUITimer);
     Timer.on('iniciar', atualizarUITimer);
@@ -651,26 +809,31 @@ const Paginas = {
       try {
         if (!Timer.audioCtx) { const Ctx = window.AudioContext || window.webkitAudioContext; if (Ctx) Timer.audioCtx = new Ctx(); }
         if (Timer.audioCtx?.state === 'suspended') Timer.audioCtx.resume?.();
-      } catch (e) {}
+      } catch {}
       const e = Timer.estado();
       if (e.rodando) Timer.pausar();
       else if (e.pausado) Timer.retomar();
       else Timer.iniciar();
+      salvarDraftUI();
     });
 
-    btnResetar?.addEventListener('click', () => Timer.resetar());
+    btnResetar?.addEventListener('click', () => {
+      Timer.resetar();
+      atualizarTituloTimer();
+      salvarDraftUI();
+    });
 
     btnFinalizar?.addEventListener('click', () => {
-      const topico = document.getElementById('in-topico')?.value?.trim() ?? '';
+      const topico = InputSanitizer.texto(inTopico?.value, { max: 200 });
       if (!topico) { Toast.aviso('Informe o tópico estudado.'); return; }
       const e = Timer.estado();
       if ((e.totalDecorrido ?? 0) < 1) { Toast.aviso('Inicie o timer antes de finalizar.'); return; }
       Timer.parar();
-      abrirModalFinalizar({
-        concursoId: concurso.id, disciplinaId: disciplinaSelId, topico,
-        tipo: tipoSelecionado, duracaoSegundos: e.totalDecorrido, iniciadoEm: e.iniciadoEm
-      });
+      abrirModalFinalizar({ concursoId: concurso.id, disciplinaId: disciplinaSelId, topico, tipo: tipoSelecionado, duracaoSegundos: e.totalDecorrido, iniciadoEm: e.iniciadoEm });
     });
+
+    salvarDraftUI();
+    atualizarTituloTimer();
   }
 };
 window.Paginas = Paginas;
@@ -882,11 +1045,11 @@ Paginas.questoes = async function(main) {
         </div>
         <div class="form-group">
           <label>Tópico / Assunto</label>
-          <input type="text" id="q-topico" placeholder="Ex: Princípios orçamentários" autocomplete="off" />
+          <input type="text" id="q-topico" maxlength="200" placeholder="Ex: Princípios orçamentários" autocomplete="off" />
         </div>
         <div class="form-group">
           <label>Origem (banca / concurso)</label>
-          <input type="text" id="q-origem" placeholder="Ex: CESPE - PF 2021" autocomplete="off" />
+          <input type="text" id="q-origem" maxlength="100" placeholder="Ex: CESPE - PF 2021" autocomplete="off" />
         </div>
         <div class="form-group">
           <label>Resultado</label>
@@ -930,8 +1093,8 @@ Paginas.questoes = async function(main) {
 
     cont.querySelectorAll('.resultado-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const topico = document.getElementById('q-topico')?.value?.trim();
-        const origem = document.getElementById('q-origem')?.value?.trim();
+        const topico = InputSanitizer.texto(document.getElementById('q-topico')?.value, { max: 200 });
+        const origem = InputSanitizer.texto(document.getElementById('q-origem')?.value, { max: 100 });
         const resultado = btn.dataset.resultado;
 
         if (!topico) { Toast.aviso('Informe o tópico da questão.'); return; }
@@ -1413,10 +1576,10 @@ Paginas.configuracoes = async function(main) {
     <div class="settings-section">
       <div class="settings-section-title">Concurso</div>
       ${concurso ? `
-      <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" value="${escapeHtml(concurso.nome)}" /></div>
+      <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" maxlength="100" value="${escapeHtml(concurso.nome)}" /></div>
       <div class="form-group"><label>Data da prova</label><input type="date" id="cfg-data" value="${concurso.dataProva ? new Date(concurso.dataProva).toISOString().split('T')[0] : ''}" /></div>
       <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="cfg-horas" min="1" max="18" value="${concurso.horasDiarias ?? 4}" /></div>
-      <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="500" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
+      <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="5000" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
       <button class="btn btn-primary btn-sm" id="btn-salvar-concurso">Salvar concurso</button>
       ` : `<button class="btn btn-primary" id="btn-criar-concurso">Criar concurso</button>`}
     </div>
@@ -1434,13 +1597,34 @@ Paginas.configuracoes = async function(main) {
         <button class="btn btn-sm btn-secondary" id="btn-importar-trigger">Importar</button>
         <button class="btn btn-sm btn-secondary" id="btn-compartilhar">Compartilhar</button>
       </div>
+      <div id="backup-progresso" class="text-dim" style="margin-top:8px;display:none;">Progresso: <span id="backup-progresso-val">0%</span></div>
       <input type="file" id="input-importar" accept=".json" style="display:none;" />
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Integridade</div>
+      <button class="btn btn-sm btn-secondary" id="btn-verificar-integridade">Verificar integridade do banco</button>
+      <div id="integridade-resultado" class="text-dim" style="margin-top:8px;"></div>
     </div>
 
     <div class="settings-section">
       <div class="settings-section-title" style="color:var(--danger);">Zona de perigo</div>
       <button class="btn btn-sm btn-danger" id="btn-limpar-dados">Limpar todos os dados</button>
     </div>`;
+
+  function setBackupUIBusy(busy) {
+    ['btn-exportar', 'btn-importar-trigger', 'btn-compartilhar'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !!busy;
+    });
+    const p = document.getElementById('backup-progresso');
+    if (p) p.style.display = busy ? 'block' : 'none';
+  }
+
+  function atualizarProgressoBackup(pct) {
+    const v = document.getElementById('backup-progresso-val');
+    if (v) v.textContent = `${pct}%`;
+  }
 
   function renderDisciplinas() {
     const cont = document.getElementById('lista-disciplinas');
@@ -1461,7 +1645,7 @@ Paginas.configuracoes = async function(main) {
 
     cont.querySelectorAll('.btn-edit-disc').forEach(btn => {
       btn.addEventListener('click', () => {
-        const id = parseInt(btn.dataset.id);
+        const id = parseInt(btn.dataset.id, 10);
         const disc = disciplinas.find(d => d.id === id);
         if (disc) abrirModalEditarDisciplina(disc, concurso);
       });
@@ -1472,39 +1656,99 @@ Paginas.configuracoes = async function(main) {
   document.getElementById('btn-salvar-concurso')?.addEventListener('click', async () => {
     try {
       await Concursos.atualizar(concurso.id, {
-        nome: document.getElementById('cfg-nome')?.value?.trim() || concurso.nome,
-        dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : concurso.dataProva,
-        horasDiarias: parseInt(document.getElementById('cfg-horas')?.value) || concurso.horasDiarias,
-        totalQuestoes: parseInt(document.getElementById('cfg-total-questoes')?.value) || null
+        nome: InputSanitizer.texto(document.getElementById('cfg-nome')?.value, { max: 100, obrigatorio: true }),
+        dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : null,
+        horasDiarias: InputSanitizer.inteiro(document.getElementById('cfg-horas')?.value, { min: 1, max: 18, fallback: 4 }),
+        totalQuestoes: document.getElementById('cfg-total-questoes')?.value ? InputSanitizer.inteiro(document.getElementById('cfg-total-questoes')?.value, { min: 1, max: 5000, fallback: null }) : null
       });
       Toast.sucesso('Concurso salvo!');
-    } catch (e) { Toast.erro('Erro ao salvar.'); }
+    } catch (e) { Toast.erro(e?.message ?? 'Erro ao salvar.'); }
   });
 
   document.getElementById('btn-criar-concurso')?.addEventListener('click', () => abrirModalSetupConcurso());
-
-  document.getElementById('btn-add-disciplina')?.addEventListener('click', () => {
-    if (concurso) abrirModalEditarDisciplina(null, concurso);
-  });
+  document.getElementById('btn-add-disciplina')?.addEventListener('click', () => { if (concurso) abrirModalEditarDisciplina(null, concurso); });
 
   document.getElementById('btn-exportar')?.addEventListener('click', async () => {
     try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
   });
+
   document.getElementById('btn-importar-trigger')?.addEventListener('click', () => document.getElementById('input-importar')?.click());
   document.getElementById('input-importar')?.addEventListener('change', async (e) => {
-    try { await Backup.importarDeArquivo(e.target.files?.[0]); Toast.sucesso('Dados importados!'); Router.ir('dashboard'); }
-    catch (err) { Toast.erro(err?.message ?? 'Erro ao importar'); }
+    setBackupUIBusy(true);
+    atualizarProgressoBackup(0);
+    try {
+      await Backup.importarDeArquivo(e.target.files?.[0], pct => atualizarProgressoBackup(pct));
+      Toast.sucesso('Importação concluída com consistência verificada.');
+      Router.ir('dashboard');
+    } catch (err) {
+      Toast.erro(err?.message ?? 'Falha na importação transacional.');
+      const snapshot = Backup.obterSnapshotPreImportacao?.();
+      if (snapshot) {
+        Modal.abrir(`
+          <div class="modal-title">Falha na importação</div>
+          <div class="modal-text">Deseja restaurar automaticamente o snapshot salvo antes da importação?</div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" id="btn-snap-nao">Agora não</button>
+            <button class="btn btn-primary" id="btn-snap-sim">Restaurar snapshot</button>
+          </div>
+        `);
+        document.getElementById('btn-snap-nao')?.addEventListener('click', () => Modal.fechar());
+        document.getElementById('btn-snap-sim')?.addEventListener('click', async () => {
+          try {
+            await Backup.restaurarSnapshotPreImportacao();
+            Toast.sucesso('Snapshot restaurado com sucesso.');
+            Modal.fechar();
+            Router.ir('dashboard');
+          } catch (e2) {
+            Toast.erro(e2?.message ?? 'Falha ao restaurar snapshot.');
+          }
+        });
+      }
+    } finally {
+      setBackupUIBusy(false);
+      const input = document.getElementById('input-importar');
+      if (input) input.value = '';
+    }
   });
+
   document.getElementById('btn-compartilhar')?.addEventListener('click', async () => {
     try { const r = await Backup.compartilhar(); if (r?.ok && !r?.cancelado) Toast.sucesso('Backup compartilhado!'); }
-    catch (e) { Toast.erro('Erro ao compartilhar'); }
+    catch { Toast.erro('Erro ao compartilhar'); }
+  });
+
+  document.getElementById('btn-verificar-integridade')?.addEventListener('click', async () => {
+    try {
+      const info = await verificarIntegridadeBanco();
+      const out = document.getElementById('integridade-resultado');
+      const linhas = info.resumo.map(x => `${x.tabela}: ${x.total}`).join(' · ');
+      if (out) out.innerHTML = `${escapeHtml(linhas)}${info.conflitos ? ' · ⚠️ Múltiplos concursos detectados' : ' · ✅ OK'}`;
+      if (info.conflitos) {
+        Modal.abrir(`
+          <div class="modal-title">Resolver concursos duplicados</div>
+          <div class="modal-text">Foram encontrados múltiplos concursos ativos. O sistema manterá apenas o mais recente.</div>
+          <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
+            <button class="btn btn-primary" id="btn-resolver-conflito">Resolver agora</button>
+          </div>
+        `);
+        document.getElementById('btn-resolver-conflito')?.addEventListener('click', async () => {
+          const ativo = await Concursos.ativo();
+          if (ativo) await Concursos.criar(ativo);
+          Modal.fechar();
+          Toast.sucesso('Conflito de concurso resolvido.');
+          Router.ir('configuracoes');
+        });
+      }
+    } catch (e) {
+      Toast.erro(e?.message ?? 'Falha na verificação de integridade.');
+    }
   });
 
   document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
     Modal.abrir(`
       <div class="modal-title">⚠️ Limpar todos os dados</div>
       <div class="modal-text">Essa ação é irreversível. Digite <strong>APAGAR</strong> para confirmar:</div>
-      <div class="form-group"><input type="text" id="input-confirmar-limpar" placeholder="APAGAR" /></div>
+      <div class="form-group"><input type="text" id="input-confirmar-limpar" maxlength="20" placeholder="APAGAR" /></div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
         <button class="btn btn-danger" id="btn-confirmar-limpar">Limpar</button>
@@ -1516,7 +1760,7 @@ Paginas.configuracoes = async function(main) {
         await db.concursos.clear(); await db.disciplinas.clear(); await db.topicos.clear();
         await db.sessoes.clear(); await db.revisoes.clear(); await db.cicloConfig.clear(); await db.questoes.clear();
         Modal.fechar(); Toast.sucesso('Dados limpos!'); Router.ir('dashboard');
-      } catch (e) { Toast.erro('Erro ao limpar dados.'); }
+      } catch { Toast.erro('Erro ao limpar dados.'); }
     });
   });
 };
@@ -1525,10 +1769,10 @@ Paginas.configuracoes = async function(main) {
 async function abrirModalSetupConcurso() {
   Modal.abrir(`
     <div class="modal-title">🎯 Configurar Concurso</div>
-    <div class="form-group"><label>Nome do concurso</label><input type="text" id="setup-nome" placeholder="Ex: TRF3 - Analista" /></div>
+    <div class="form-group"><label>Nome do concurso</label><input type="text" id="setup-nome" maxlength="100" placeholder="Ex: TRF3 - Analista" /></div>
     <div class="form-group"><label>Data da prova</label><input type="date" id="setup-data" /></div>
     <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="setup-horas" min="1" max="18" value="6" /></div>
-    <div class="form-group"><label>Total de questões da prova</label><input type="number" id="setup-total-q" min="1" max="500" placeholder="Ex: 120" /></div>
+    <div class="form-group"><label>Total de questões da prova</label><input type="number" id="setup-total-q" min="1" max="5000" placeholder="Ex: 120" /></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
       <button class="btn btn-primary" id="setup-salvar">Criar</button>
@@ -1536,24 +1780,20 @@ async function abrirModalSetupConcurso() {
   `, { fecharNoFundo: false });
 
   document.getElementById('setup-salvar')?.addEventListener('click', async () => {
-    const nome = document.getElementById('setup-nome')?.value?.trim();
-    const dataVal = document.getElementById('setup-data')?.value;
-    const horas = parseInt(document.getElementById('setup-horas')?.value) || 6;
-    const totalQ = parseInt(document.getElementById('setup-total-q')?.value) || null;
-    if (!nome) { Toast.aviso('Informe o nome do concurso.'); return; }
     try {
-      await Concursos.criar({
-        nome,
-        dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null,
-        horasDiarias: horas,
-        totalQuestoes: totalQ
-      });
+      const nome = InputSanitizer.texto(document.getElementById('setup-nome')?.value, { max: 100, obrigatorio: true });
+      const dataVal = document.getElementById('setup-data')?.value;
+      const horas = InputSanitizer.inteiro(document.getElementById('setup-horas')?.value, { min: 1, max: 18, fallback: 6 });
+      const totalQ = document.getElementById('setup-total-q')?.value ? InputSanitizer.inteiro(document.getElementById('setup-total-q')?.value, { min: 1, max: 5000, fallback: null }) : null;
+      await Concursos.criar({ nome, dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null, horasDiarias: horas, totalQuestoes: totalQ });
       Modal.fechar();
       Toast.sucesso('Concurso criado!');
       const nav = document.getElementById('bottom-nav');
       if (nav) nav.style.display = 'flex';
       Router.ir('configuracoes');
-    } catch (e) { Toast.erro('Erro ao criar concurso.'); }
+    } catch (e) {
+      Toast.erro(e?.message ?? 'Erro ao criar concurso.');
+    }
   });
 }
 window.abrirModalSetupConcurso = abrirModalSetupConcurso;
@@ -1565,24 +1805,15 @@ async function abrirModalEditarDisciplina(disc, concurso) {
 
   Modal.abrir(`
     <div class="modal-title">${isNovo ? '+ Nova Disciplina' : 'Editar Disciplina'}</div>
-    <div class="form-group"><label>Nome</label><input type="text" id="disc-nome" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Constitucional" /></div>
-    <div class="form-group"><label>Nº de questões na prova</label><input type="number" id="disc-num-questoes" min="1" max="200" value="${disc?.numQuestoes ?? 10}" /></div>
-    <div class="form-group"><label>Peso por questão</label><input type="number" id="disc-peso-questao" min="1" max="10" value="${disc?.pesoQuestao ?? 1}" /></div>
-    <div class="form-group">
-      <label>Grau de conhecimento</label>
-      <select id="disc-grau">
-        ${[1,2,3,4,5].map(g => `<option value="${g}" ${(disc?.grauConhecimento ?? 3) === g ? 'selected' : ''}>${g} - ${DistribuicaoEstudo.LABELS_CONHECIMENTO[g]}</option>`).join('')}
-      </select>
+    <div class="form-group"><label>Nome</label><input type="text" id="disc-nome" maxlength="100" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Constitucional" /></div>
+    <div class="form-group"><label>Nº de questões na prova</label><input type="number" id="disc-num-questoes" min="1" max="1000" value="${disc?.numQuestoes ?? 10}" /></div>
+    <div class="form-group"><label>Peso por questão</label><input type="number" id="disc-peso-questao" min="1" max="50" value="${disc?.pesoQuestao ?? 1}" /></div>
+    <div class="form-group"><label>Grau de conhecimento</label>
+      <select id="disc-grau">${[1,2,3,4,5].map(g => `<option value="${g}" ${(disc?.grauConhecimento ?? 3) === g ? 'selected' : ''}>${g} - ${DistribuicaoEstudo.LABELS_CONHECIMENTO[g]}</option>`).join('')}</select>
     </div>
+    <div class="form-group"><label>Cor</label><input type="color" id="disc-cor" value="${disc?.cor ?? corPadrao}" /></div>
     <div class="form-group">
-      <label>Cor</label>
-      <input type="color" id="disc-cor" value="${disc?.cor ?? corPadrao}" />
-    </div>
-    <div class="form-group">
-      <div class="row" style="border:none;padding:0;">
-        <label style="margin:0;">Eliminatória?</label>
-        <div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-elim-toggle"></div>
-      </div>
+      <div class="row" style="border:none;padding:0;"><label style="margin:0;">Eliminatória?</label><div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-elim-toggle"></div></div>
     </div>
     <div class="form-group" id="disc-elim-percentual-wrap" style="display:${disc?.eliminatoria ? 'block' : 'none'};">
       <label>Percentual mínimo de acerto (%)</label>
@@ -1603,20 +1834,18 @@ async function abrirModalEditarDisciplina(disc, concurso) {
   });
 
   document.getElementById('disc-salvar')?.addEventListener('click', async () => {
-    const nome = document.getElementById('disc-nome')?.value?.trim();
-    if (!nome) { Toast.aviso('Informe o nome.'); return; }
-    const dados = {
-      concursoId: concurso.id,
-      nome,
-      numQuestoes: parseInt(document.getElementById('disc-num-questoes')?.value) || 10,
-      pesoQuestao: parseInt(document.getElementById('disc-peso-questao')?.value) || 1,
-      grauConhecimento: parseInt(document.getElementById('disc-grau')?.value) || 3,
-      cor: document.getElementById('disc-cor')?.value ?? corPadrao,
-      eliminatoria,
-      percentualMinimo: eliminatoria ? (parseInt(document.getElementById('disc-percentual-min')?.value) || 50) : null,
-      ordemCiclo: disc?.ordemCiclo ?? 0
-    };
     try {
+      const dados = {
+        concursoId: concurso.id,
+        nome: InputSanitizer.texto(document.getElementById('disc-nome')?.value, { max: 100, obrigatorio: true }),
+        numQuestoes: InputSanitizer.inteiro(document.getElementById('disc-num-questoes')?.value, { min: 1, max: 1000, fallback: 10 }),
+        pesoQuestao: InputSanitizer.inteiro(document.getElementById('disc-peso-questao')?.value, { min: 1, max: 50, fallback: 1 }),
+        grauConhecimento: InputSanitizer.inteiro(document.getElementById('disc-grau')?.value, { min: 1, max: 5, fallback: 3 }),
+        cor: InputSanitizer.corHex(document.getElementById('disc-cor')?.value, { fallback: corPadrao }),
+        eliminatoria,
+        percentualMinimo: eliminatoria ? InputSanitizer.percentual(document.getElementById('disc-percentual-min')?.value, { fallback: 50 }) : null,
+        ordemCiclo: disc?.ordemCiclo ?? 0
+      };
       if (isNovo) {
         const discs = await Disciplinas.listar(concurso.id);
         dados.ordemCiclo = discs.length;
@@ -1628,7 +1857,9 @@ async function abrirModalEditarDisciplina(disc, concurso) {
       }
       Modal.fechar();
       Router.ir('configuracoes');
-    } catch (e) { Toast.erro('Erro ao salvar disciplina.'); }
+    } catch (e) {
+      Toast.erro(e?.message ?? 'Erro ao salvar disciplina.');
+    }
   });
 
   document.getElementById('disc-remover')?.addEventListener('click', async () => {
@@ -1651,264 +1882,7 @@ async function abrirModalEditarDisciplina(disc, concurso) {
         const questoes = await db.questoes.where({ disciplinaId: disc.id }).toArray();
         for (const q of questoes) await db.questoes.delete(q.id);
         Modal.fechar(); Toast.sucesso('Disciplina removida!'); Router.ir('configuracoes');
-      } catch (e) { Toast.erro('Erro ao remover.'); }
-    });
-  });
-}
-window.abrirModalEditarDisciplina = abrirModalEditarDisciplina;
-
-/* ===== CONFIGURAÇÕES ===== */
-Paginas.configuracoes = async function(main) {
-  const concurso = await Concursos.ativo();
-  const disciplinas = concurso ? await Disciplinas.listar(concurso.id) : [];
-
-  main.innerHTML = `
-    <div class="page-header">
-      <h1 class="page-title">Configurações</h1>
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Concurso</div>
-      ${concurso ? `
-      <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" value="${escapeHtml(concurso.nome)}" /></div>
-      <div class="form-group"><label>Data da prova</label><input type="date" id="cfg-data" value="${concurso.dataProva ? new Date(concurso.dataProva).toISOString().split('T')[0] : ''}" /></div>
-      <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="cfg-horas" min="1" max="18" value="${concurso.horasDiarias ?? 4}" /></div>
-      <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="500" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
-      <button class="btn btn-primary btn-sm" id="btn-salvar-concurso">Salvar concurso</button>
-      ` : `<button class="btn btn-primary" id="btn-criar-concurso">Criar concurso</button>`}
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Disciplinas</div>
-      <div id="lista-disciplinas"></div>
-      ${concurso ? '<button class="btn btn-sm btn-primary mt-12" id="btn-add-disciplina">+ Adicionar disciplina</button>' : ''}
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Backup</div>
-      <div class="btn-row">
-        <button class="btn btn-sm btn-primary" id="btn-exportar">Exportar</button>
-        <button class="btn btn-sm btn-secondary" id="btn-importar-trigger">Importar</button>
-        <button class="btn btn-sm btn-secondary" id="btn-compartilhar">Compartilhar</button>
-      </div>
-      <input type="file" id="input-importar" accept=".json" style="display:none;" />
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title" style="color:var(--danger);">Zona de perigo</div>
-      <button class="btn btn-sm btn-danger" id="btn-limpar-dados">Limpar todos os dados</button>
-    </div>`;
-
-  function renderDisciplinas() {
-    const cont = document.getElementById('lista-disciplinas');
-    if (!cont) return;
-    if (disciplinas.length === 0) { cont.innerHTML = '<div class="text-dim">Nenhuma disciplina cadastrada.</div>'; return; }
-    cont.innerHTML = disciplinas.map(d => {
-      const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.grauConhecimento] ?? 'Médio';
-      const pontos = (d.numQuestoes ?? 0) * (d.pesoQuestao ?? 1);
-      return `<div class="discipline-item" data-id="${d.id}">
-        <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(d.cor)}"></span>
-        <div class="item-content">
-          <div class="item-title">${escapeHtml(d.nome)}</div>
-          <div class="item-subtitle">${d.numQuestoes ?? 0}q × peso ${d.pesoQuestao ?? 1} = ${pontos}pts · ${grauLabel}${d.eliminatoria ? ` · Elim. ${d.percentualMinimo ?? 50}%` : ''}</div>
-        </div>
-        <button class="btn-icon btn-edit-disc" data-id="${d.id}" title="Editar">✏️</button>
-      </div>`;
-    }).join('');
-
-    cont.querySelectorAll('.btn-edit-disc').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = parseInt(btn.dataset.id);
-        const disc = disciplinas.find(d => d.id === id);
-        if (disc) abrirModalEditarDisciplina(disc, concurso);
-      });
-    });
-  }
-  renderDisciplinas();
-
-  document.getElementById('btn-salvar-concurso')?.addEventListener('click', async () => {
-    try {
-      await Concursos.atualizar(concurso.id, {
-        nome: document.getElementById('cfg-nome')?.value?.trim() || concurso.nome,
-        dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : concurso.dataProva,
-        horasDiarias: parseInt(document.getElementById('cfg-horas')?.value) || concurso.horasDiarias,
-        totalQuestoes: parseInt(document.getElementById('cfg-total-questoes')?.value) || null
-      });
-      Toast.sucesso('Concurso salvo!');
-    } catch (e) { Toast.erro('Erro ao salvar.'); }
-  });
-
-  document.getElementById('btn-criar-concurso')?.addEventListener('click', () => abrirModalSetupConcurso());
-
-  document.getElementById('btn-add-disciplina')?.addEventListener('click', () => {
-    if (concurso) abrirModalEditarDisciplina(null, concurso);
-  });
-
-  document.getElementById('btn-exportar')?.addEventListener('click', async () => {
-    try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); } catch (e) { Toast.erro(e?.message ?? 'Erro'); }
-  });
-  document.getElementById('btn-importar-trigger')?.addEventListener('click', () => document.getElementById('input-importar')?.click());
-  document.getElementById('input-importar')?.addEventListener('change', async (e) => {
-    try { await Backup.importarDeArquivo(e.target.files?.[0]); Toast.sucesso('Dados importados!'); Router.ir('dashboard'); }
-    catch (err) { Toast.erro(err?.message ?? 'Erro ao importar'); }
-  });
-  document.getElementById('btn-compartilhar')?.addEventListener('click', async () => {
-    try { const r = await Backup.compartilhar(); if (r?.ok && !r?.cancelado) Toast.sucesso('Backup compartilhado!'); }
-    catch (e) { Toast.erro('Erro ao compartilhar'); }
-  });
-
-  document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
-    Modal.abrir(`
-      <div class="modal-title">⚠️ Limpar todos os dados</div>
-      <div class="modal-text">Essa ação é irreversível. Digite <strong>APAGAR</strong> para confirmar:</div>
-      <div class="form-group"><input type="text" id="input-confirmar-limpar" placeholder="APAGAR" /></div>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-        <button class="btn btn-danger" id="btn-confirmar-limpar">Limpar</button>
-      </div>
-    `);
-    document.getElementById('btn-confirmar-limpar')?.addEventListener('click', async () => {
-      if (document.getElementById('input-confirmar-limpar')?.value?.trim() !== 'APAGAR') { Toast.aviso('Digite APAGAR para confirmar.'); return; }
-      try {
-        await db.concursos.clear(); await db.disciplinas.clear(); await db.topicos.clear();
-        await db.sessoes.clear(); await db.revisoes.clear(); await db.cicloConfig.clear(); await db.questoes.clear();
-        Modal.fechar(); Toast.sucesso('Dados limpos!'); Router.ir('dashboard');
-      } catch (e) { Toast.erro('Erro ao limpar dados.'); }
-    });
-  });
-};
-
-/* ============ Modal: Setup Concurso ============ */
-async function abrirModalSetupConcurso() {
-  Modal.abrir(`
-    <div class="modal-title">🎯 Configurar Concurso</div>
-    <div class="form-group"><label>Nome do concurso</label><input type="text" id="setup-nome" placeholder="Ex: TRF3 - Analista" /></div>
-    <div class="form-group"><label>Data da prova</label><input type="date" id="setup-data" /></div>
-    <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="setup-horas" min="1" max="18" value="6" /></div>
-    <div class="form-group"><label>Total de questões da prova</label><input type="number" id="setup-total-q" min="1" max="500" placeholder="Ex: 120" /></div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-primary" id="setup-salvar">Criar</button>
-    </div>
-  `, { fecharNoFundo: false });
-
-  document.getElementById('setup-salvar')?.addEventListener('click', async () => {
-    const nome = document.getElementById('setup-nome')?.value?.trim();
-    const dataVal = document.getElementById('setup-data')?.value;
-    const horas = parseInt(document.getElementById('setup-horas')?.value) || 6;
-    const totalQ = parseInt(document.getElementById('setup-total-q')?.value) || null;
-    if (!nome) { Toast.aviso('Informe o nome do concurso.'); return; }
-    try {
-      await Concursos.criar({
-        nome,
-        dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null,
-        horasDiarias: horas,
-        totalQuestoes: totalQ
-      });
-      Modal.fechar();
-      Toast.sucesso('Concurso criado!');
-      const nav = document.getElementById('bottom-nav');
-      if (nav) nav.style.display = 'flex';
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro('Erro ao criar concurso.'); }
-  });
-}
-window.abrirModalSetupConcurso = abrirModalSetupConcurso;
-
-/* ============ Modal: Editar/Criar Disciplina ============ */
-async function abrirModalEditarDisciplina(disc, concurso) {
-  const isNovo = !disc;
-  const corPadrao = CORES_PADRAO[Math.floor(Math.random() * CORES_PADRAO.length)];
-
-  Modal.abrir(`
-    <div class="modal-title">${isNovo ? '+ Nova Disciplina' : 'Editar Disciplina'}</div>
-    <div class="form-group"><label>Nome</label><input type="text" id="disc-nome" value="${escapeHtml(disc?.nome ?? '')}" placeholder="Ex: Direito Constitucional" /></div>
-    <div class="form-group"><label>Nº de questões na prova</label><input type="number" id="disc-num-questoes" min="1" max="200" value="${disc?.numQuestoes ?? 10}" /></div>
-    <div class="form-group"><label>Peso por questão</label><input type="number" id="disc-peso-questao" min="1" max="10" value="${disc?.pesoQuestao ?? 1}" /></div>
-    <div class="form-group">
-      <label>Grau de conhecimento</label>
-      <select id="disc-grau">
-        ${[1,2,3,4,5].map(g => `<option value="${g}" ${(disc?.grauConhecimento ?? 3) === g ? 'selected' : ''}>${g} - ${DistribuicaoEstudo.LABELS_CONHECIMENTO[g]}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Cor</label>
-      <input type="color" id="disc-cor" value="${disc?.cor ?? corPadrao}" />
-    </div>
-    <div class="form-group">
-      <div class="row" style="border:none;padding:0;">
-        <label style="margin:0;">Eliminatória?</label>
-        <div class="toggle-switch ${disc?.eliminatoria ? 'active' : ''}" id="disc-elim-toggle"></div>
-      </div>
-    </div>
-    <div class="form-group" id="disc-elim-percentual-wrap" style="display:${disc?.eliminatoria ? 'block' : 'none'};">
-      <label>Percentual mínimo de acerto (%)</label>
-      <input type="number" id="disc-percentual-min" min="1" max="100" value="${disc?.percentualMinimo ?? 50}" />
-    </div>
-    <div class="modal-actions">
-      ${!isNovo ? '<button class="btn btn-danger btn-sm" id="disc-remover">Remover</button>' : ''}
-      <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-      <button class="btn btn-primary" id="disc-salvar">Salvar</button>
-    </div>
-  `);
-
-  let eliminatoria = disc?.eliminatoria ?? false;
-  document.getElementById('disc-elim-toggle')?.addEventListener('click', () => {
-    eliminatoria = !eliminatoria;
-    document.getElementById('disc-elim-toggle')?.classList.toggle('active', eliminatoria);
-    document.getElementById('disc-elim-percentual-wrap').style.display = eliminatoria ? 'block' : 'none';
-  });
-
-  document.getElementById('disc-salvar')?.addEventListener('click', async () => {
-    const nome = document.getElementById('disc-nome')?.value?.trim();
-    if (!nome) { Toast.aviso('Informe o nome.'); return; }
-    const dados = {
-      concursoId: concurso.id,
-      nome,
-      numQuestoes: parseInt(document.getElementById('disc-num-questoes')?.value) || 10,
-      pesoQuestao: parseInt(document.getElementById('disc-peso-questao')?.value) || 1,
-      grauConhecimento: parseInt(document.getElementById('disc-grau')?.value) || 3,
-      cor: document.getElementById('disc-cor')?.value ?? corPadrao,
-      eliminatoria,
-      percentualMinimo: eliminatoria ? (parseInt(document.getElementById('disc-percentual-min')?.value) || 50) : null,
-      ordemCiclo: disc?.ordemCiclo ?? 0
-    };
-    try {
-      if (isNovo) {
-        const discs = await Disciplinas.listar(concurso.id);
-        dados.ordemCiclo = discs.length;
-        await Disciplinas.criar(dados);
-        Toast.sucesso('Disciplina adicionada!');
-      } else {
-        await Disciplinas.atualizar(disc.id, dados);
-        Toast.sucesso('Disciplina atualizada!');
-      }
-      Modal.fechar();
-      Router.ir('configuracoes');
-    } catch (e) { Toast.erro('Erro ao salvar disciplina.'); }
-  });
-
-  document.getElementById('disc-remover')?.addEventListener('click', async () => {
-    if (!disc) return;
-    Modal.abrir(`
-      <div class="modal-title">Remover disciplina?</div>
-      <div class="modal-text">Isso removerá "${escapeHtml(disc.nome)}" e todas as sessões, revisões e questões associadas.</div>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" onclick="Modal.fechar()">Cancelar</button>
-        <button class="btn btn-danger" id="disc-confirmar-remover">Remover</button>
-      </div>
-    `);
-    document.getElementById('disc-confirmar-remover')?.addEventListener('click', async () => {
-      try {
-        await Disciplinas.remover(disc.id);
-        const sessoes = await db.sessoes.where({ disciplinaId: disc.id }).toArray();
-        for (const s of sessoes) await db.sessoes.delete(s.id);
-        const revisoes = await db.revisoes.where({ disciplinaId: disc.id }).toArray();
-        for (const r of revisoes) await db.revisoes.delete(r.id);
-        const questoes = await db.questoes.where({ disciplinaId: disc.id }).toArray();
-        for (const q of questoes) await db.questoes.delete(q.id);
-        Modal.fechar(); Toast.sucesso('Disciplina removida!'); Router.ir('configuracoes');
-      } catch (e) { Toast.erro('Erro ao remover.'); }
+      } catch { Toast.erro('Erro ao remover.'); }
     });
   });
 }
@@ -1921,30 +1895,16 @@ async function abrirModalFinalizar(dados) {
   Modal.abrir(`
     <div class="modal-title">🎉 Sessão finalizada!</div>
     <div class="modal-text" style="font-style:italic;">"${escapeHtml(frase)}"</div>
-    <div class="modal-text">
-      <strong>${escapeHtml(dados.topico)}</strong><br/>
-      ${escapeHtml(dados.tipo)} · ${TempoUtil.formatarHhMm(dados.duracaoSegundos)}
-    </div>
-    <div class="form-group">
-      <label>Como você avalia essa sessão?</label>
-      <div class="stars" id="stars-avaliacao">
-        ${[1,2,3,4,5].map(i => `<span class="star" data-val="${i}">☆</span>`).join('')}
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Anotações (opcional)</label>
-      <textarea id="finalizar-notas" rows="2" placeholder="Ex: Preciso revisar a parte de..."></textarea>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" id="finalizar-descartar">Descartar</button>
-      <button class="btn btn-primary" id="finalizar-salvar">Salvar sessão</button>
-    </div>
+    <div class="modal-text"><strong>${escapeHtml(dados.topico)}</strong><br/>${escapeHtml(dados.tipo)} · ${TempoUtil.formatarHhMm(dados.duracaoSegundos)}</div>
+    <div class="form-group"><label>Como você avalia essa sessão?</label><div class="stars" id="stars-avaliacao">${[1,2,3,4,5].map(i => `<span class="star" data-val="${i}">☆</span>`).join('')}</div></div>
+    <div class="form-group"><label>Anotações (opcional)</label><textarea id="finalizar-notas" maxlength="5000" rows="2" placeholder="Ex: Preciso revisar a parte de..."></textarea></div>
+    <div class="modal-actions"><button class="btn btn-secondary" id="finalizar-descartar">Descartar</button><button class="btn btn-primary" id="finalizar-salvar">Salvar sessão</button></div>
   `, { fecharNoFundo: false });
 
   let avaliacao = 0;
   document.querySelectorAll('#stars-avaliacao .star').forEach(star => {
     star.addEventListener('click', () => {
-      avaliacao = parseInt(star.dataset.val);
+      avaliacao = parseInt(star.dataset.val, 10);
       document.querySelectorAll('#stars-avaliacao .star').forEach((s, i) => {
         s.textContent = (i < avaliacao) ? '★' : '☆';
         s.classList.toggle('active', i < avaliacao);
@@ -1952,17 +1912,21 @@ async function abrirModalFinalizar(dados) {
     });
   });
 
-  document.getElementById('finalizar-descartar')?.addEventListener('click', () => {
-    Modal.fechar(); Timer.resetar();
+  document.getElementById('finalizar-descartar')?.addEventListener('click', async () => {
+    const concurso = await Concursos.ativo();
+    if (concurso?.id) limparRascunhoSessaoEstudo(concurso.id);
+    Modal.fechar();
+    Timer.resetar();
+    atualizarTituloTimer();
   });
 
   document.getElementById('finalizar-salvar')?.addEventListener('click', async () => {
     try {
-      const notas = document.getElementById('finalizar-notas')?.value?.trim() ?? '';
+      const notas = InputSanitizer.texto(document.getElementById('finalizar-notas')?.value, { max: 5000 });
       const sessaoId = await Sessoes.criar({
         concursoId: dados.concursoId,
         disciplinaId: dados.disciplinaId,
-        topico: dados.topico,
+        topico: InputSanitizer.texto(dados.topico, { max: 200, obrigatorio: true }),
         tipo: dados.tipo,
         data: dados.iniciadoEm ?? new Date().toISOString(),
         duracaoSegundos: dados.duracaoSegundos,
@@ -1971,11 +1935,7 @@ async function abrirModalFinalizar(dados) {
       });
 
       if (dados.tipo === 'Novo') {
-        await Revisoes.criarParaSessao({
-          id: sessaoId, disciplinaId: dados.disciplinaId,
-          topico: dados.topico, tipo: 'Novo',
-          data: dados.iniciadoEm ?? new Date().toISOString()
-        });
+        await Revisoes.criarParaSessao({ id: sessaoId, disciplinaId: dados.disciplinaId, topico: dados.topico, tipo: 'Novo', data: dados.iniciadoEm ?? new Date().toISOString() });
       }
 
       if (dados.tipo?.startsWith('Revisão')) {
@@ -1984,14 +1944,16 @@ async function abrirModalFinalizar(dados) {
       }
 
       const concurso = await Concursos.ativo();
-      if (concurso) await Ciclo.avancarPosicao(concurso.id);
+      if (concurso) {
+        await Ciclo.avancarPosicao(concurso.id);
+        limparRascunhoSessaoEstudo(concurso.id);
+      }
 
-      Modal.fechar(); Timer.resetar();
+      Modal.fechar(); Timer.resetar(); atualizarTituloTimer();
       Toast.sucesso('Sessão registrada!');
       Router.ir('dashboard');
     } catch (e) {
-      Toast.erro('Erro ao salvar sessão.');
-      console.error(e);
+      Toast.erro(e?.message ?? 'Erro ao salvar sessão.');
     }
   });
 }
@@ -2009,5 +1971,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  await registrarServiceWorkerConfiavel();
   Router.ir('dashboard');
 });

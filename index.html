@@ -65,14 +65,5 @@
   <script src="js/backup.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/app.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => {
-          console.warn('SW falhou:', err);
-        });
-      });
-    }
-  </script>
 </body>
 </html>
