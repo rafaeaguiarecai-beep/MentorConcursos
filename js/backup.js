@@ -81,6 +81,14 @@ const Backup = {
         item.totalQuestoes = inteiro(item.totalQuestoes, 'totalQuestoes', { min: 1, max: 5000, obrigatorio: false });
         item.dataProva = dataISO(item.dataProva, 'dataProva');
         item.criadoEm = dataISO(item.criadoEm, 'criadoEm') ?? new Date().toISOString();
+        // Sprint 2: dias de estudo (campo opcional, default seg-sáb)
+        if (item.diasEstudoSemana !== undefined && item.diasEstudoSemana !== null) {
+          if (!Array.isArray(item.diasEstudoSemana)) item.diasEstudoSemana = [1, 2, 3, 4, 5, 6];
+          item.diasEstudoSemana = [...new Set(item.diasEstudoSemana.filter(d => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
+          if (item.diasEstudoSemana.length === 0) item.diasEstudoSemana = [1, 2, 3, 4, 5, 6];
+        } else {
+          item.diasEstudoSemana = [1, 2, 3, 4, 5, 6];
+        }
       }
 
       if (nomeTabela === 'disciplinas') {
@@ -115,6 +123,33 @@ const Backup = {
         item.dataPrevista = dataISO(item.dataPrevista, 'dataPrevista', true);
         item.dataRealizada = dataISO(item.dataRealizada, 'dataRealizada');
         item.status = enumValor(item.status ?? 'pendente', 'status', ['pendente', 'feita']);
+        // Campos SM-2
+        if (item.fatorFacilidade !== undefined && item.fatorFacilidade !== null) {
+          const ef = parseFloat(item.fatorFacilidade);
+          if (Number.isNaN(ef) || ef < 1.3 || ef > 5.0) item.fatorFacilidade = 2.5;
+          else item.fatorFacilidade = Math.round(ef * 1000) / 1000;
+        } else {
+          item.fatorFacilidade = 2.5;
+        }
+
+        if (item.intervaloAtual !== undefined && item.intervaloAtual !== null) {
+          item.intervaloAtual = inteiro(item.intervaloAtual, 'intervaloAtual', { min: 1, max: 36500 });
+        } else {
+          const mapaInt = { R1: 1, R2: 7, R3: 30 };
+          item.intervaloAtual = mapaInt[item.tipoRevisao] ?? 1;
+        }
+
+        if (item.repeticoes !== undefined && item.repeticoes !== null) {
+          item.repeticoes = inteiro(item.repeticoes, 'repeticoes', { min: 0, max: 10000 });
+        } else {
+          item.repeticoes = 0;
+        }
+
+        if (item.notaRevisao !== undefined && item.notaRevisao !== null) {
+          item.notaRevisao = inteiro(item.notaRevisao, 'notaRevisao', { min: 0, max: 5 });
+        } else {
+          item.notaRevisao = null;
+        }
       }
 
       if (nomeTabela === 'cicloConfig') {
@@ -130,6 +165,44 @@ const Backup = {
         item.origem = textoComLimite(item.origem, 'origem', 100, false);
         item.resultado = enumValor(item.resultado ?? 'errou', 'resultado', ['acertou', 'acertou_duvida', 'errou', 'errou_desatencao']);
         item.data = dataISO(item.data, 'data', true);
+      }
+
+      if (nomeTabela === 'conquistas') {
+        item.chave = textoComLimite(item.chave, 'chave', 100, true);
+        item.desbloqueadaEm = dataISO(item.desbloqueadaEm, 'desbloqueadaEm', true);
+        item.visualizada = Boolean(item.visualizada ?? false);
+      }
+
+      if (nomeTabela === 'simulados') {
+        item.concursoId = inteiro(item.concursoId, 'concursoId', { min: 1 });
+        item.titulo = textoComLimite(item.titulo, 'titulo', 200, false);
+        item.duracaoLimite = inteiro(item.duracaoLimite ?? 3600, 'duracaoLimite', { min: 0, max: 86400 });
+        item.status = enumValor(item.status ?? 'em_andamento', 'status', ['em_andamento', 'finalizado', 'cancelado']);
+        item.data = dataISO(item.data, 'data', true);
+        item.criadoEm = dataISO(item.criadoEm, 'criadoEm', false) ?? new Date().toISOString();
+        item.finalizadoEm = dataISO(item.finalizadoEm, 'finalizadoEm', false);
+        // respostas array
+        item.respostas = Array.isArray(item.respostas) ? item.respostas.map((r, i) => {
+          if (!r || typeof r !== 'object') return null;
+          return {
+            disciplinaId: r.disciplinaId ? inteiro(r.disciplinaId, `respostas[${i}].disciplinaId`, { min: 1, obrigatorio: false }) : null,
+            topicoId: r.topicoId ?? null,
+            enunciado: textoComLimite(r.enunciado, `respostas[${i}].enunciado`, 5000, false),
+            alternativas: Array.isArray(r.alternativas) ? r.alternativas.map((a, j) => textoComLimite(a, `respostas[${i}].alternativas[${j}]`, 500, false)) : [],
+            respostaCorreta: inteiro(r.respostaCorreta ?? 0, `respostas[${i}].respostaCorreta`, { min: 0, max: 20 }),
+            respostaDada: r.respostaDada !== null && r.respostaDada !== undefined ? inteiro(r.respostaDada, `respostas[${i}].respostaDada`, { min: 0, max: 20 }) : null,
+            tempo: inteiro(r.tempo ?? 0, `respostas[${i}].tempo`, { min: 0 })
+          };
+        }).filter(r => r !== null) : [];
+        // resultado
+        if (item.resultado && typeof item.resultado === 'object') {
+          item.resultado.nota = parseFloat(item.resultado.nota ?? 0) || 0;
+          item.resultado.acertos = inteiro(item.resultado.acertos ?? 0, 'resultado.acertos', { min: 0 });
+          item.resultado.erros = inteiro(item.resultado.erros ?? 0, 'resultado.erros', { min: 0 });
+          item.resultado.tempo = inteiro(item.resultado.tempo ?? 0, 'resultado.tempo', { min: 0 });
+        } else if (!item.resultado) {
+          item.resultado = null;
+        }
       }
 
       return item;

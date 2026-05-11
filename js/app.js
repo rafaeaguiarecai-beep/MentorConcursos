@@ -66,6 +66,219 @@ const Modal = {
 window.Modal = Modal;
 window.Toast = Toast;
 
+/* ============ Toast de Conquista ============ */
+function mostrarConquista(conquista) {
+  if (!conquista) return;
+  const cont = document.getElementById('toast-container');
+  if (!cont) return;
+  const t = document.createElement('div');
+  t.className = 'toast conquista-toast';
+  t.innerHTML = `<span style="font-size:28px;">${escapeHtml(conquista.icone ?? '🏆')}</span> <strong>Conquista desbloqueada!</strong><br/>${escapeHtml(conquista.nome ?? '')}`;
+  cont.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = '0';
+    setTimeout(() => t.remove(), 400);
+  }, 4000);
+}
+window.mostrarConquista = mostrarConquista;
+
+/* ============ Módulo Notificacoes ============ */
+const Notificacoes = {
+  _prefsChave: 'mentor_notificacoes_prefs',
+
+  _carregarPrefs() {
+    try {
+      const bruto = localStorage.getItem(this._prefsChave);
+      return bruto ? JSON.parse(bruto) : { revisoes: true, meta: true };
+    } catch { return { revisoes: true, meta: true }; }
+  },
+
+  _salvarPrefs(prefs) {
+    try { localStorage.setItem(this._prefsChave, JSON.stringify(prefs)); } catch {}
+  },
+
+  async pedirPermissao() {
+    if (!('Notification' in window)) return 'denied';
+    if (Notification.permission === 'granted') return 'granted';
+    if (Notification.permission === 'denied') return 'denied';
+    const result = await Notification.requestPermission();
+    return result;
+  },
+
+  async agendar(titulo, corpo, delayMs) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    setTimeout(() => {
+      try {
+        new Notification(titulo, { body: corpo, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png' });
+      } catch {}
+    }, delayMs ?? 0);
+  },
+
+  async verificarRevisoesHoje() {
+    const prefs = this._carregarPrefs();
+    if (!prefs.revisoes) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const concurso = await Concursos.ativo();
+    if (!concurso) return;
+    const paraHoje = await Revisoes.paraHoje(concurso.id);
+    const count = paraHoje?.length ?? 0;
+    if (count > 0) {
+      new Notification('MentorConcursos', {
+        body: `Você tem ${count} revisão${count !== 1 ? 'ões' : ''} pendente${count !== 1 ? 's' : ''} para hoje!`,
+        icon: 'icons/icon-192.png',
+        badge: 'icons/icon-192.png'
+      });
+    }
+  },
+
+  async verificarMetaSemanal() {
+    const prefs = this._carregarPrefs();
+    if (!prefs.meta) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const concurso = await Concursos.ativo();
+    if (!concurso) return;
+    const sessoes = await Sessoes.listar(concurso.id);
+    const diasEstudoSemana = Array.isArray(concurso.diasEstudoSemana) && concurso.diasEstudoSemana.length > 0
+      ? concurso.diasEstudoSemana : [1, 2, 3, 4, 5, 6];
+    const infoDias = DataUtil.diasEstudoNaSemana(diasEstudoSemana);
+    const metaSemanalSeg = (concurso.horasDiarias ?? 4) * 3600 * infoDias.totalSemana;
+    const inicioSem = DataUtil.inicioSemana(new Date());
+    const fimSem = DataUtil.fimSemana(new Date());
+    const sessSemana = (sessoes ?? []).filter(s => {
+      const d = new Date(s?.data);
+      return d >= inicioSem && d <= fimSem;
+    });
+    const segEstudadosSemana = sessSemana.reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
+    const pct = metaSemanalSeg > 0 ? (segEstudadosSemana / metaSemanalSeg) * 100 : 0;
+    const hoje = new Date();
+    const diaSemana = hoje.getDay();
+    // Após quarta-feira (dia 3 ou depois) com menos de 30% de progresso
+    if ((diaSemana >= 3 || diaSemana === 0) && pct < 30 && infoDias.restantes > 0) {
+      new Notification('MentorConcursos', {
+        body: `Sua meta semanal está em ${Math.round(pct)}%. Ainda dá tempo de recuperar!`,
+        icon: 'icons/icon-192.png',
+        badge: 'icons/icon-192.png'
+      });
+    }
+  },
+
+  alternarRevisoes(ativo) {
+    const prefs = this._carregarPrefs();
+    prefs.revisoes = !!ativo;
+    this._salvarPrefs(prefs);
+  },
+
+  alternarMeta(ativo) {
+    const prefs = this._carregarPrefs();
+    prefs.meta = !!ativo;
+    this._salvarPrefs(prefs);
+  },
+
+  prefs() {
+    return this._carregarPrefs();
+  }
+};
+window.Notificacoes = Notificacoes;
+
+/* ============ Relatório ============ */
+async function gerarRelatorioTexto(concursoId) {
+  const concurso = await Concursos.ativo();
+  if (!concurso || concurso.id !== concursoId) return 'Concurso não encontrado.';
+  const disciplinas = await Disciplinas.listar(concursoId);
+  const sessoes = await Sessoes.listar(concursoId);
+  const statsQuestoes = await Questoes.estatisticasPorDisciplina(concursoId);
+  const streak = await Streak.calcular(concursoId);
+  const conquistas = await Conquistas.listar();
+  const diagnostico = await Diagnostico.analisar(concursoId);
+
+  const totalSeg = (sessoes ?? []).reduce((acc, s) => acc + (s?.duracaoSegundos ?? 0), 0);
+
+  const mapaDisc = {};
+  for (const d of disciplinas ?? []) mapaDisc[d.id] = d;
+
+  let txt = '';
+  txt += `=== RELATÓRIO DE ESTUDOS ===\n`;
+  txt += `Concurso: ${concurso.nome}\n`;
+  txt += `Data do relatório: ${new Date().toLocaleDateString('pt-BR')}\n`;
+  txt += `Data da prova: ${concurso.dataProva ? new Date(concurso.dataProva).toLocaleDateString('pt-BR') : 'Não definida'}\n\n`;
+
+  txt += `--- RESUMO GERAL ---\n`;
+  txt += `Total de horas estudadas: ${TempoUtil.formatarHhMm(totalSeg)}\n`;
+  txt += `Total de sessões: ${sessoes?.length ?? 0}\n`;
+  txt += `Streak atual: ${streak.atual} dias consecutivos\n`;
+  txt += `Streak máximo: ${streak.maximo} dias\n`;
+  txt += `Dias de estudo esta semana: ${streak.diasEstaSemana}\n\n`;
+
+  txt += `--- HORAS POR DISCIPLINA ---\n`;
+  const segPorDisc = {};
+  for (const s of sessoes ?? []) {
+    segPorDisc[s?.disciplinaId] = (segPorDisc[s?.disciplinaId] ?? 0) + (s?.duracaoSegundos ?? 0);
+  }
+  for (const d of disciplinas ?? []) {
+    const seg = segPorDisc[d.id] ?? 0;
+    txt += `${d.nome}: ${TempoUtil.formatarHhMm(seg)}\n`;
+  }
+
+  txt += `\n--- TAXA DE ACERTO POR DISCIPLINA ---\n`;
+  for (const d of disciplinas ?? []) {
+    const stats = statsQuestoes[d.id];
+    if (!stats || stats.total === 0) {
+      txt += `${d.nome}: Sem questões registradas\n`;
+    } else {
+      const taxa = Questoes.taxaAcerto(stats).toFixed(0);
+      txt += `${d.nome}: ${taxa}% (${stats.total} questões)\n`;
+    }
+  }
+
+  txt += `\n--- CONQUISTAS DESBLOQUEADAS ---\n`;
+  if ((conquistas?.length ?? 0) === 0) {
+    txt += `Nenhuma conquista desbloqueada ainda.\n`;
+  } else {
+    for (const c of conquistas) {
+      const cat = CATALOGO_CONQUISTAS.find(x => x.chave === c.chave);
+      txt += `${cat?.icone ?? '🏆'} ${cat?.nome ?? c.chave} - ${DataUtil.formatarData(c.desbloqueadaEm)}\n`;
+    }
+  }
+
+  txt += `\n--- DIAGNÓSTICO RESUMIDO ---\n`;
+  txt += `Tópicos críticos: ${diagnostico?.topicosCriticos?.length ?? 0}\n`;
+  txt += `Sem revisão recente: ${diagnostico?.semRevisaoRecente?.length ?? 0}\n`;
+  txt += `Eliminatórias em risco: ${diagnostico?.eliminatoriasEmRisco?.length ?? 0}\n`;
+  if (diagnostico?.sugestaoDoDia) {
+    txt += `Sugestão do dia: ${diagnostico.sugestaoDoDia.topico ?? diagnostico.sugestaoDoDia.disciplinaNome} - ${diagnostico.sugestaoDoDia.motivo}\n`;
+  }
+
+  txt += `\n---\nGerado por MentorConcursos\n`;
+
+  return txt;
+}
+window.gerarRelatorioTexto = gerarRelatorioTexto;
+
+async function baixarRelatorio(concursoId) {
+  try {
+    const texto = await gerarRelatorioTexto(concursoId ?? (await Concursos.ativo())?.id);
+    if (!texto || !(await Concursos.ativo())) {
+      Toast.aviso('Configure um concurso primeiro.');
+      return;
+    }
+    const blob = new Blob([texto], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = url;
+    a.download = `relatorio_mentorconcursos_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    Toast.sucesso('Relatório baixado!');
+  } catch (e) {
+    Toast.erro('Erro ao gerar relatório.');
+    console.error(e);
+  }
+}
+window.baixarRelatorio = baixarRelatorio;
+
 /* ============ Router ============ */
 const Router = {
   paginaAtual: 'dashboard',
@@ -114,6 +327,34 @@ function escapeHtml(str) {
 }
 window.escapeHtml = escapeHtml;
 
+/* Mini calendário streak (30 dias) */
+function renderMiniCalendario(concursoId) {
+  if (!concursoId) return '<div class="text-dim" style="font-size:10px;">Carregando...</div>';
+  // Render placeholder (preenchido assincronamente)
+  return `<div id="mini-calendario-${concursoId}" class="streak-calendario-grid"></div>`;
+}
+// Preenche o mini calendário assincronamente
+async function preencherMiniCalendario(concursoId) {
+  const el = document.getElementById(`mini-calendario-${concursoId}`);
+  if (!el) return;
+  try {
+    const diasSet = await Streak.diasComSessao(concursoId, 30);
+    const hoje = new Date();
+    let html = '';
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(hoje);
+      d.setDate(d.getDate() - i);
+      const iso = d.toISOString().split('T')[0];
+      const ativo = diasSet.has(iso);
+      const ehHoje = i === 0;
+      html += `<span class="streak-dia ${ativo ? 'ativo' : ''} ${ehHoje ? 'hoje' : ''}" title="${d.toLocaleDateString('pt-BR')}"></span>`;
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="text-dim" style="font-size:10px;">Erro ao carregar</div>';
+  }
+}
+window.preencherMiniCalendario = preencherMiniCalendario;
 
 const InputSanitizer = {
   texto(valor, { max = 120, obrigatorio = false } = {}) {
@@ -252,7 +493,6 @@ async function verificarIntegridadeBanco() {
   return { resumo, conflitos, totalConcursos: concursos.length };
 }
 
-
 /* Autocomplete simples reutilizável */
 function setupAutocomplete(inputId, getSuggestionsFn) {
   const input = document.getElementById(inputId);
@@ -364,11 +604,11 @@ const Paginas = {
     const mapaDisc = {};
     for (const d of disciplinas ?? []) mapaDisc[d.id] = d;
 
-    // Distribuição de tempo
-    const distribuicao = DistribuicaoEstudo.calcularDistribuicao(disciplinas, concurso.horasDiarias);
-
-    // Estatísticas de questões
+    // SPRINT 2.5: Estatísticas de questões + distribuição efetiva
     const statsQuestoes = await Questoes.estatisticasPorDisciplina(concurso.id);
+    const distribuicao = DistribuicaoEstudo.calcularDistribuicaoEfetiva(disciplinas, concurso.horasDiarias, statsQuestoes);
+    const distMap = {};
+    for (const d of distribuicao) distMap[d.disciplina.id] = d;
 
     // Alertas eliminatórias
     const alertasEliminatorias = [];
@@ -384,8 +624,15 @@ const Paginas = {
     const precisaBackup = Backup.precisaLembrar();
     const dias = Backup.diasDesdeUltimo();
 
+    // SPRINT 2.5: Diagnóstico resumido
+    let diagnostico = null;
+    try { diagnostico = await Diagnostico.analisar(concurso.id); } catch (e) { console.warn('Diagnostico:', e); }
+
     // ---- META SEMANAL ----
-    const metaSemanalSeg = (concurso.horasDiarias ?? 4) * 3600 * 7;
+    const diasEstudoSemana = Array.isArray(concurso.diasEstudoSemana) && concurso.diasEstudoSemana.length > 0
+      ? concurso.diasEstudoSemana : [1, 2, 3, 4, 5, 6];
+    const infoDias = DataUtil.diasEstudoNaSemana(diasEstudoSemana);
+    const metaSemanalSeg = (concurso.horasDiarias ?? 4) * 3600 * infoDias.totalSemana;
     const inicioSem = DataUtil.inicioSemana(new Date());
     const fimSem = DataUtil.fimSemana(new Date());
     const sessSemana = (sessoes ?? []).filter(s => {
@@ -394,24 +641,47 @@ const Paginas = {
     });
     const segEstudadosSemana = sessSemana.reduce((a, s) => a + (s?.duracaoSegundos ?? 0), 0);
     const pctSemana = metaSemanalSeg > 0 ? Math.min(100, Math.round((segEstudadosSemana / metaSemanalSeg) * 100)) : 0;
-
-    // Dias já estudados na semana
     const diasEstudadosSet = new Set();
-    for (const s of sessSemana) {
-      diasEstudadosSet.add(new Date(s?.data).toDateString());
-    }
+    for (const s of sessSemana) diasEstudadosSet.add(new Date(s?.data).toDateString());
     const diasEstudados = diasEstudadosSet.size;
-    const diaDaSemana = new Date().getDay(); // 0=dom
-    const diasPassados = diaDaSemana === 0 ? 7 : diaDaSemana; // seg=1 ... dom=7
-    const diasRestantes = 7 - diasPassados;
-    const segRestantes = metaSemanalSeg - segEstudadosSemana;
+    const diasPassados = infoDias.passados;
+    const diasRestantes = infoDias.restantes;
+    const segRestantes = Math.max(0, metaSemanalSeg - segEstudadosSemana);
     const metaDiariaSugerida = diasRestantes > 0 ? Math.max(0, segRestantes / diasRestantes) : 0;
+    const hojeEhDiaEstudo = infoDias.hojeEhDiaEstudo;
+
+    // ---- Sugestão do dia ----
+    const sugestao = diagnostico?.sugestaoDoDia ?? null;
+    const temDiagnostico = diagnostico && (
+      (diagnostico.topicosCriticos?.length ?? 0) > 0 ||
+      (diagnostico.semRevisaoRecente?.length ?? 0) > 0 ||
+      (diagnostico.eliminatoriasEmRisco?.length ?? 0) > 0
+    );
 
     main.innerHTML = `
       <div class="page-header">
         <h1 class="page-title">Dashboard</h1>
         <p class="page-subtitle">${escapeHtml(concurso.nome)}</p>
       </div>
+
+      ${!hojeEhDiaEstudo ? `
+      <div class="banner" style="background-color:var(--card);border-left:4px solid var(--success);">
+        <div class="banner-icon">😌</div>
+        <div class="banner-content">
+          <strong>Hoje é seu dia de descanso</strong>
+          Pode estudar se quiser, mas não conta na meta como obrigação.${infoDias.proximoDiaEstudo ? ` Próximo dia: ${DataUtil.nomeDiaSemana(infoDias.proximoDiaEstudo.getDay(), 'longo')}.` : ''}
+        </div>
+      </div>` : ''}
+
+      ${sugestao ? `
+      <div class="banner" style="background-color:var(--card);border-left:4px solid ${sugestao.tipo === 'eliminatoria' ? '#ef4444' : sugestao.tipo === 'topico_fraco' ? '#fbbf24' : '#60B5FF'};">
+        <div class="banner-icon">${sugestao.tipo === 'eliminatoria' ? '🚨' : sugestao.tipo === 'topico_fraco' ? '🎯' : '📅'}</div>
+        <div class="banner-content">
+          <strong>Sugestão do dia: ${escapeHtml(sugestao.topico ?? sugestao.disciplinaNome)}</strong>
+          <span class="color-dot" style="background-color:${escapeHtml(sugestao.disciplinaCor ?? '#e94560')};display:inline-block;margin:0 4px;vertical-align:middle;"></span>${escapeHtml(sugestao.disciplinaNome)} — ${escapeHtml(sugestao.motivo)}
+        </div>
+        ${sugestao.topico ? `<button class="btn btn-sm btn-primary" id="btn-sugestao-estudar">Estudar</button>` : `<button class="btn btn-sm btn-primary" id="btn-sugestao-questoes">Questões</button>`}
+      </div>` : ''}
 
       ${precisaBackup ? `
       <div class="banner" id="banner-backup">
@@ -445,11 +715,11 @@ const Paginas = {
         <div class="meta-resumo" style="margin-top:8px;">
           <div class="meta-resumo-item">
             <div class="meta-resumo-valor">${diasEstudados}/${diasPassados}</div>
-            <div class="meta-resumo-label">Dias estudados</div>
+            <div class="meta-resumo-label">Dias estudados (de ${infoDias.totalSemana} previstos)</div>
           </div>
           <div class="meta-resumo-item">
             <div class="meta-resumo-valor">${TempoUtil.formatarHhMm(metaDiariaSugerida)}</div>
-            <div class="meta-resumo-label">Meta hoje${diasRestantes > 1 ? ` (${diasRestantes}d rest.)` : ''}</div>
+            <div class="meta-resumo-label">${hojeEhDiaEstudo ? 'Meta hoje' : 'Meta próx. dia'}${diasRestantes > 0 ? ` (${diasRestantes}d rest.)` : ''}</div>
           </div>
           <div class="meta-resumo-item">
             <div class="meta-resumo-valor">${sessSemana.length}</div>
@@ -459,11 +729,24 @@ const Paginas = {
         <button class="btn btn-sm btn-secondary" id="btn-ver-acompanhamento" style="margin-top:12px;width:100%;">Ver acompanhamento completo</button>
       </div>
 
+      ${temDiagnostico ? `
+      <div class="card card-clickable" id="card-diagnostico" style="border-left:4px solid #fbbf24;">
+        <div class="card-title">🔍 Diagnóstico rápido</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;">
+          ${(diagnostico.topicosCriticos?.length ?? 0) > 0 ? `<div><span style="font-size:20px;font-weight:700;color:#ef4444;">${diagnostico.topicosCriticos.length}</span> <span class="text-dim">tópicos fracos</span></div>` : ''}
+          ${(diagnostico.semRevisaoRecente?.length ?? 0) > 0 ? `<div><span style="font-size:20px;font-weight:700;color:#60B5FF;">${diagnostico.semRevisaoRecente.length}</span> <span class="text-dim">sem revisão (30d+)</span></div>` : ''}
+          ${(diagnostico.eliminatoriasEmRisco?.length ?? 0) > 0 ? `<div><span style="font-size:20px;font-weight:700;color:#ef4444;">${diagnostico.eliminatoriasEmRisco.length}</span> <span class="text-dim">eliminatórias em risco</span></div>` : ''}
+        </div>
+        <div class="text-dim" style="margin-top:8px;font-size:12px;">Toque para ver detalhes →</div>
+      </div>` : ''}
+
       <div class="card countdown-card">
         <div class="card-title">Contagem regressiva</div>
         <div class="card-value" id="countdown-status">Calculando...</div>
         <div class="countdown-grid" id="countdown-grid"></div>
       </div>
+
+      <div class="card-grid" id="streak-conquista-grid" style="display:none;"></div>
 
       <div class="card-grid">
         <div class="card">
@@ -502,9 +785,14 @@ const Paginas = {
 
       <div class="card">
         <div class="card-title">Distribuição ideal de tempo</div>
+        <div class="text-dim" style="font-size:11px;margin-bottom:8px;">Baseada no impacto na nota × grau efetivo de conhecimento</div>
         ${distribuicao.map(d => {
           const pct = (d.proporcao * 100).toFixed(0);
-          const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[d.disciplina.grauConhecimento] ?? '';
+          const ig = d.infoGrau;
+          const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[ig?.grauEfetivo ?? d.disciplina.grauConhecimento] ?? '';
+          const grauDetalhe = ig ? (ig.grauReal !== null
+            ? `Grau ${ig.grauEfetivo} (manual: ${ig.grauManual}, real: ${ig.grauReal} · ${ig.taxaAcerto}% acerto)`
+            : `Grau ${ig.grauEfetivo} (${ig.fonteCalculo})`) : '';
           return `<div class="distribuicao-item">
             <div class="distribuicao-header">
               <span class="color-dot" style="background-color:${escapeHtml(d.disciplina.cor)}"></span>
@@ -513,6 +801,7 @@ const Paginas = {
             </div>
             <div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%;background-color:${escapeHtml(d.disciplina.cor)}"></div></div>
             <div class="distribuicao-detalhe">${d.disciplina.numQuestoes ?? 0}q × peso ${d.disciplina.pesoQuestao ?? 1} = ${d.pontosMax}pts · ${grauLabel}</div>
+            ${grauDetalhe ? `<div class="distribuicao-detalhe text-dim" style="font-size:11px;">${escapeHtml(grauDetalhe)}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -543,7 +832,7 @@ const Paginas = {
       </div>
     `;
 
-    // Event listeners do dashboard
+    // Event listeners
     if (precisaBackup) {
       document.getElementById('banner-export')?.addEventListener('click', async () => {
         try { await Backup.exportar(); Toast.sucesso('Backup exportado!'); Router.ir('dashboard'); }
@@ -552,6 +841,15 @@ const Paginas = {
     }
     document.getElementById('card-revisoes-hoje')?.addEventListener('click', () => Router.ir('revisoes'));
     document.getElementById('btn-ver-acompanhamento')?.addEventListener('click', () => Router.ir('acompanhamento'));
+    document.getElementById('card-diagnostico')?.addEventListener('click', () => Router.ir('diagnostico'));
+
+    // Sugestão do dia — botões de ação
+    document.getElementById('btn-sugestao-estudar')?.addEventListener('click', () => {
+      if (sugestao) Router.ir('estudar', { disciplinaId: sugestao.disciplinaId, topico: sugestao.topico ?? '' });
+    });
+    document.getElementById('btn-sugestao-questoes')?.addEventListener('click', () => {
+      Router.ir('questoes');
+    });
 
     // Countdown
     const atualizarCountdown = () => {
@@ -587,10 +885,54 @@ const Paginas = {
       else clearInterval(window.__countdownInt);
     }, 1000);
 
+    // Streak + Conquista mini-cards
+    setTimeout(async () => {
+      const grid = document.getElementById('streak-conquista-grid');
+      if (!grid) return;
+      const streak = await Streak.calcular(concurso.id);
+      const conquistasDesbloq = await Conquistas.listar();
+      const ultima = conquistasDesbloq?.[0];
+      const ultimaCat = ultima ? (CATALOGO_CONQUISTAS.find(c => c.chave === ultima.chave)) : null;
+
+      let html = '';
+      // Streak card
+      html += `<div class="card streak-card" id="card-streak" style="cursor:pointer;">
+        <div class="card-title">🔥 Sequência</div>
+        <div class="streak-numero">${streak.atual}</div>
+        <div style="font-size:13px;color:var(--text-dim);">dia${streak.atual !== 1 ? 's' : ''} consecutivo${streak.atual !== 1 ? 's' : ''}${streak.atual >= 7 ? ' 🔥' : ''}</div>
+        ${streak.atual === 0 ? '<div style="font-size:12px;color:var(--accent);">Comece hoje!</div>' : ''}
+        <div class="streak-calendario" style="margin-top:8px;">
+          ${renderMiniCalendario(concurso.id)}
+        </div>
+      </div>`;
+
+      // Conquista card
+      html += `<div class="card" id="card-conquista" style="cursor:pointer;">
+        <div class="card-title">🏆 Conquistas</div>
+        ${ultimaCat ? `
+          <div style="font-size:32px;text-align:center;">${escapeHtml(ultimaCat.icone)}</div>
+          <div class="card-value" style="font-size:16px;">${escapeHtml(ultimaCat.nome)}</div>
+          <div class="text-dim" style="font-size:11px;">Última conquista · ${DataUtil.formatarData(ultima.desbloqueadaEm)}</div>
+        ` : `
+          <div style="font-size:32px;text-align:center;opacity:0.3;">🔒</div>
+          <div class="text-dim" style="text-align:center;">Nenhuma conquista ainda<br/>— comece a estudar!</div>
+        `}
+        <div style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:4px;">${conquistasDesbloq?.length ?? 0} de ${CATALOGO_CONQUISTAS.length}</div>
+        <div class="conquista-progresso" style="margin-top:6px;">
+          <div class="progress-bar" style="height:4px;"><div class="progress-bar-fill" style="width:${((conquistasDesbloq?.length ?? 0) / CATALOGO_CONQUISTAS.length) * 100}%;background:#FFD700;"></div></div>
+        </div>
+      </div>`;
+
+      grid.innerHTML = html;
+      grid.style.display = 'grid';
+      document.getElementById('card-streak')?.addEventListener('click', () => Router.ir('dashboard'));
+      document.getElementById('card-conquista')?.addEventListener('click', () => Router.ir('conquistas'));
+    }, 100);
+
     setTimeout(() => Graficos.barrasHorasPorDisciplina('chart-disciplinas', concurso.id), 50);
   },
 
-    /* ===== ESTUDAR ===== */
+  /* ===== ESTUDAR ===== */
   async estudar(main) {
     const concurso = await Concursos.ativo();
     if (!concurso) {
@@ -1301,11 +1643,166 @@ Paginas.ciclo = async function(main) {
   });
 };
 
+/* ===== DIAGNÓSTICO (SPRINT 2.5) ===== */
+Paginas.diagnostico = async function(main) {
+  const concurso = await Concursos.ativo();
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
+
+  const resultado = await Diagnostico.analisar(concurso.id);
+  const disciplinas = await Disciplinas.listar(concurso.id);
+  const statsQuestoes = await Questoes.estatisticasPorDisciplina(concurso.id);
+  const mapaDisc = {};
+  for (const d of disciplinas) mapaDisc[d.id] = d;
+
+  // Grau efetivo de cada disciplina
+  const grausEfetivos = disciplinas.map(d => {
+    const stats = statsQuestoes[d.id] ?? null;
+    const info = DistribuicaoEstudo.grauEfetivo(d, stats);
+    return { disciplina: d, ...info };
+  });
+
+  const { topicosCriticos, semRevisaoRecente, eliminatoriasEmRisco, sugestaoDoDia } = resultado;
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Diagnóstico</h1>
+      <p class="page-subtitle">Análise de pontos fracos e prioridades</p>
+    </div>
+
+    ${sugestaoDoDia ? `
+    <div class="card" style="border-left:4px solid ${sugestaoDoDia.tipo === 'eliminatoria' ? '#ef4444' : sugestaoDoDia.tipo === 'topico_fraco' ? '#fbbf24' : '#60B5FF'};">
+      <div class="card-title">${sugestaoDoDia.tipo === 'eliminatoria' ? '🚨' : '🎯'} Prioridade do dia</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(sugestaoDoDia.disciplinaCor ?? '#e94560')}"></span>
+        <div>
+          <div style="font-weight:600;">${escapeHtml(sugestaoDoDia.topico ?? sugestaoDoDia.disciplinaNome)}</div>
+          <div class="text-dim">${escapeHtml(sugestaoDoDia.disciplinaNome)} — ${escapeHtml(sugestaoDoDia.motivo)}</div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:12px;">
+        ${sugestaoDoDia.topico ? `<button class="btn btn-sm btn-primary" id="diag-estudar-sugestao">Estudar agora</button>` : ''}
+        <button class="btn btn-sm btn-secondary" id="diag-questoes-sugestao">Resolver questões</button>
+      </div>
+    </div>` : `
+    <div class="card" style="border-left:4px solid #4ade80;">
+      <div class="card-title">✅ Tudo em dia!</div>
+      <div class="text-dim" style="margin-top:4px;">Nenhum ponto fraco detectado. Continue praticando para manter esse nível.</div>
+    </div>`}
+
+    <div class="card">
+      <div class="card-title">📊 Grau efetivo por disciplina</div>
+      <div class="text-dim" style="font-size:11px;margin-bottom:12px;">30% autoavaliação + 70% desempenho real em questões (mínimo 10q para calibrar)</div>
+      ${grausEfetivos.map(g => {
+        const d = g.disciplina;
+        const grauLabel = DistribuicaoEstudo.LABELS_CONHECIMENTO[g.grauEfetivo] ?? '';
+        const mudou = g.grauReal !== null && g.grauEfetivo !== g.grauManual;
+        const corGrau = g.grauEfetivo >= 4 ? '#ef4444' : g.grauEfetivo >= 3 ? '#fbbf24' : '#4ade80';
+        return `<div class="acomp-disc-item" style="margin-bottom:8px;">
+          <div class="acomp-disc-header">
+            <span class="color-dot" style="background-color:${escapeHtml(d.cor)}"></span>
+            <strong>${escapeHtml(d.nome)}</strong>
+            <span class="acomp-status-badge" style="background:${corGrau};">Grau ${g.grauEfetivo}</span>
+          </div>
+          <div class="text-dim" style="font-size:12px;margin-top:2px;">
+            ${grauLabel}
+            ${g.grauReal !== null
+              ? ` · Manual: ${g.grauManual} · Real: ${g.grauReal} (${g.taxaAcerto}% acerto · ${g.fonteCalculo})`
+              : ` · ${g.fonteCalculo}`}
+            ${mudou ? (g.grauEfetivo > g.grauManual ? ' · <span style="color:#ef4444;">↑ Precisa mais estudo do que você pensava</span>' : ' · <span style="color:#4ade80;">↓ Melhor do que você avaliou</span>') : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    ${topicosCriticos.length > 0 ? `
+    <div class="card">
+      <div class="card-title">🔴 Tópicos com baixa taxa de acerto</div>
+      <div class="text-dim" style="font-size:11px;margin-bottom:8px;">Taxa < 70% com pelo menos 5 questões</div>
+      ${topicosCriticos.slice(0, 15).map(t => {
+        const corTaxa = t.nivel === 'critico' ? '#ef4444' : '#fbbf24';
+        return `<div class="review-item" style="cursor:pointer;" data-diag-disc="${t.disciplinaId}" data-diag-topico="${escapeHtml(t.topico)}">
+          <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(t.disciplinaCor)}"></span>
+          <div class="item-content">
+            <div class="item-title">${escapeHtml(t.topico)}</div>
+            <div class="item-subtitle">${escapeHtml(t.disciplinaNome)} · ${t.total} questões · ${t.erros} erros</div>
+          </div>
+          <div class="item-meta" style="color:${corTaxa};font-weight:600;">${t.taxa}%</div>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+
+    ${semRevisaoRecente.length > 0 ? `
+    <div class="card">
+      <div class="card-title">📅 Sem revisão há mais de 30 dias</div>
+      ${semRevisaoRecente.slice(0, 15).map(s => {
+        return `<div class="review-item" style="cursor:pointer;" data-diag-disc="${s.disciplinaId}" data-diag-topico="${escapeHtml(s.topico)}">
+          <span class="color-dot color-dot-lg" style="background-color:${escapeHtml(s.disciplinaCor)}"></span>
+          <div class="item-content">
+            <div class="item-title">${escapeHtml(s.topico)}</div>
+            <div class="item-subtitle">${escapeHtml(s.disciplinaNome)} · última: ${DataUtil.formatarData(s.ultimaData)}</div>
+          </div>
+          <div class="item-meta" style="color:#60B5FF;font-weight:600;">${s.diasDesdeUltimaRevisao}d</div>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+
+    ${eliminatoriasEmRisco.length > 0 ? `
+    <div class="card">
+      <div class="card-title">🚨 Eliminatórias em risco</div>
+      ${eliminatoriasEmRisco.map(e => {
+        return `<div class="eliminatoria-alerta">
+          <span class="color-dot" style="background-color:${escapeHtml(e.disciplinaCor)}"></span>
+          <div class="item-content">
+            <div class="item-title">${escapeHtml(e.disciplinaNome)}</div>
+            <div class="item-subtitle">
+              ${e.status === 'sem_dados'
+                ? `Sem dados suficientes (${e.totalQuestoes} questões) — mínimo: ${e.percentualMinimo}%`
+                : `Taxa: <span class="text-danger">${e.taxaAtual}%</span> · Mínimo: ${e.percentualMinimo}% · Deficit: ${e.deficit}pp`}
+            </div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+  `;
+
+  // Event listeners — clicar em tópico vai para estudar
+  main.querySelectorAll('[data-diag-disc]').forEach(el => {
+    el.addEventListener('click', () => {
+      const discId = parseInt(el.dataset.diagDisc, 10);
+      const topico = el.dataset.diagTopico ?? '';
+      Router.ir('estudar', { disciplinaId: discId, topico });
+    });
+  });
+
+  document.getElementById('diag-estudar-sugestao')?.addEventListener('click', () => {
+    if (sugestaoDoDia) Router.ir('estudar', { disciplinaId: sugestaoDoDia.disciplinaId, topico: sugestaoDoDia.topico ?? '' });
+  });
+  document.getElementById('diag-questoes-sugestao')?.addEventListener('click', () => {
+    Router.ir('questoes');
+  });
+};
+
 /* ===== MAIS ===== */
 Paginas.mais = async function(main) {
   main.innerHTML = `
     <div class="page-header">
       <h1 class="page-title">Mais</h1>
+    </div>
+    <div class="session-item" id="btn-ir-conquistas" style="cursor:pointer;">
+      <span style="font-size:20px;">🏆</span>
+      <div class="item-content"><div class="item-title">Conquistas</div><div class="item-subtitle">Desafios e progresso</div></div>
+    </div>
+    <div class="session-item" id="btn-ir-simulados" style="cursor:pointer;">
+      <span style="font-size:20px;">📝</span>
+      <div class="item-content"><div class="item-title">Simulados</div><div class="item-subtitle">Crie e responda simulados</div></div>
+    </div>
+    <div class="session-item" id="btn-ir-acomp" style="cursor:pointer;">
+      <span style="font-size:20px;">📈</span>
+      <div class="item-content"><div class="item-title">Acompanhamento</div><div class="item-subtitle">Progresso por disciplina e metas</div></div>
+    </div>
+    <div class="session-item" id="btn-ir-diagnostico" style="cursor:pointer;">
+      <span style="font-size:20px;">🔍</span>
+      <div class="item-content"><div class="item-title">Diagnóstico</div><div class="item-subtitle">Pontos fracos, prioridades e sugestões</div></div>
     </div>
     <div class="session-item" id="btn-ir-ciclo" style="cursor:pointer;">
       <span style="font-size:20px;">🔄</span>
@@ -1315,16 +1812,29 @@ Paginas.mais = async function(main) {
       <span style="font-size:20px;">⚙️</span>
       <div class="item-content"><div class="item-title">Configurações</div><div class="item-subtitle">Concurso, disciplinas e backup</div></div>
     </div>
+    <div class="session-item" id="btn-ir-relatorio" style="cursor:pointer;">
+      <span style="font-size:20px;">📄</span>
+      <div class="item-content"><div class="item-title">Exportar Relatório</div><div class="item-subtitle">Download do resumo de estudos</div></div>
+    </div>
     <div class="session-item" id="btn-ir-sobre" style="cursor:pointer;">
       <span style="font-size:20px;">ℹ️</span>
-      <div class="item-content"><div class="item-title">Sobre</div><div class="item-subtitle">MentorConcursos v3.0</div></div>
+      <div class="item-content"><div class="item-title">Sobre</div><div class="item-subtitle">MentorConcursos v3.1</div></div>
     </div>`;
+  document.getElementById('btn-ir-conquistas')?.addEventListener('click', () => Router.ir('conquistas'));
+  document.getElementById('btn-ir-simulados')?.addEventListener('click', () => Router.ir('simulados'));
+  document.getElementById('btn-ir-acomp')?.addEventListener('click', () => Router.ir('acompanhamento'));
+  document.getElementById('btn-ir-diagnostico')?.addEventListener('click', () => Router.ir('diagnostico'));
   document.getElementById('btn-ir-ciclo')?.addEventListener('click', () => Router.ir('ciclo'));
   document.getElementById('btn-ir-config')?.addEventListener('click', () => Router.ir('configuracoes'));
+  document.getElementById('btn-ir-relatorio')?.addEventListener('click', async () => {
+    const concurso = await Concursos.ativo();
+    if (concurso) await baixarRelatorio(concurso.id);
+    else Toast.aviso('Configure um concurso primeiro.');
+  });
   document.getElementById('btn-ir-sobre')?.addEventListener('click', () => {
     Modal.abrir(`
-      <div class="modal-title">MentorConcursos v3.0</div>
-      <div class="modal-text">Gerenciador de estudos para concursos públicos. Meta semanal, acompanhamento temporal e visão por disciplina. Dados armazenados localmente via IndexedDB.</div>
+      <div class="modal-title">MentorConcursos v3.1</div>
+      <div class="modal-text">Gerenciador de estudos para concursos públicos. Revisão espaçada SM-2, diagnóstico de pontos fracos, distribuição inteligente de tempo, metas semanais, conquistas, simulados e relatórios. Dados armazenados localmente via IndexedDB.</div>
       <div class="modal-actions"><button class="btn btn-secondary" onclick="Modal.fechar()">Fechar</button></div>
     `);
   });
@@ -1563,6 +2073,147 @@ Paginas.acompanhamento = async function(main) {
   });
 };
 
+/* ===== CONQUISTAS ===== */
+Paginas.conquistas = async function(main) {
+  const concurso = await Concursos.ativo();
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
+
+  const desbloqueadas = await Conquistas.listar();
+  const chavesDesbloqueadas = new Set(desbloqueadas.map(c => c.chave));
+  const total = CATALOGO_CONQUISTAS.length;
+  const totalDesbloq = desbloqueadas.length;
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Conquistas</h1>
+      <p class="page-subtitle">${totalDesbloq} de ${total} conquistas desbloqueadas</p>
+    </div>
+    <div class="conquista-progresso">
+      <div class="progress-bar" style="height:8px;margin-bottom:16px;">
+        <div class="progress-bar-fill" style="width:${(totalDesbloq / total) * 100}%;background:#FFD700;"></div>
+      </div>
+    </div>
+    <div class="conquistas-grid">
+      ${CATALOGO_CONQUISTAS.map(c => {
+        const desbloq = chavesDesbloqueadas.has(c.chave);
+        const dados = desbloqueadas.find(d => d.chave === c.chave);
+        return `<div class="conquista-card ${desbloq ? '' : 'bloqueada'}">
+          <div class="conquista-card-icone">${desbloq ? c.icone : '🔒'}</div>
+          <div class="conquista-card-nome">${escapeHtml(c.nome)}</div>
+          <div class="conquista-card-desc">${desbloq ? escapeHtml(c.descricao) : '???'}</div>
+          ${desbloq && dados ? `<div class="conquista-card-data">${DataUtil.formatarData(dados.desbloqueadaEm)}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+};
+
+/* ===== SIMULADOS ===== */
+Paginas.simulados = async function(main) {
+  const concurso = await Concursos.ativo();
+  if (!concurso) { main.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">🎯</div><div class="empty-state-text">Configure um concurso primeiro</div></div>'; return; }
+
+  const disciplinas = await Disciplinas.listar(concurso.id);
+  const simuladosLista = await Simulados.listar(concurso.id);
+  const stats = await Simulados.estatisticas(concurso.id);
+
+  let tabAtiva = 'lista';
+
+  main.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">Simulados</h1>
+      <p class="page-subtitle">${stats.totalRealizados > 0 ? `Média: ${stats.media}% · ${stats.totalRealizados} realizados` : 'Nenhum simulado realizado'}</p>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="lista">Lista</button>
+      <button class="tab" data-tab="novo">Novo Simulado</button>
+    </div>
+    <div id="sim-tab-content"></div>`;
+
+  function renderTab(tab) {
+    tabAtiva = tab;
+    const cont = document.getElementById('sim-tab-content');
+    if (!cont) return;
+    if (tab === 'lista') renderLista(cont);
+    else if (tab === 'novo') renderNovo(cont);
+  }
+
+  function renderLista(cont) {
+    if (simuladosLista.length === 0) {
+      cont.innerHTML = '<div class="empty-state"><div class="empty-state-emoji">📝</div><div class="empty-state-text">Nenhum simulado ainda.<br/>Crie seu primeiro!</div></div>';
+      return;
+    }
+    cont.innerHTML = simuladosLista.map(s => {
+      const statusLabel = s.status === 'finalizado' ? 'Finalizado' : s.status === 'em_andamento' ? 'Em andamento' : 'Cancelado';
+      const statusEmoji = s.status === 'finalizado' ? '✅' : s.status === 'em_andamento' ? '🔄' : '❌';
+      const nota = s.resultado ? `${s.resultado.nota}%` : '-';
+      return `<div class="session-item" data-simid="${s.id}">
+        <span style="font-size:20px;">${statusEmoji}</span>
+        <div class="item-content">
+          <div class="item-title">${escapeHtml(s.titulo ?? 'Simulado')}</div>
+          <div class="item-subtitle">${statusLabel} · ${s.respostas?.length ?? 0} questões · ${nota}</div>
+        </div>
+        <div class="item-meta">${DataUtil.formatarData(s.data)}</div>
+      </div>`;
+    }).join('');
+
+    cont.querySelectorAll('.session-item').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = parseInt(el.dataset.simid);
+        const sim = await Simulados.obter(id);
+        if (!sim) return;
+        if (sim.status === 'em_andamento') {
+          abrirSimuladoEmAndamento(sim, concurso.id, disciplinas);
+        } else if (sim.status === 'finalizado') {
+          abrirResultadoSimulado(sim, disciplinas);
+        }
+      });
+    });
+  }
+
+  function renderNovo(cont) {
+    cont.innerHTML = `
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title">Configurar novo simulado</div>
+        <div class="form-group"><label>Título</label><input type="text" id="sim-titulo" maxlength="200" placeholder="Ex: Simulado 1 - Direito Constitucional" /></div>
+        <div class="form-group"><label>Duração (minutos)</label><input type="number" id="sim-duracao" min="10" max="240" value="60" /></div>
+        <div class="form-group"><label>Nº de questões</label><input type="number" id="sim-total-q" min="5" max="120" value="30" /></div>
+        <div class="form-group"><label>Distribuição</label>
+          <select id="sim-distribuicao">
+            <option value="proporcional">Proporcional ao peso</option>
+            <option value="uniforme">Uniforme (mesma quantidade)</option>
+            <option value="fraquezas">Foco nas fraquezas</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="sim-criar">Criar Simulado</button>
+      </div>`;
+
+    document.getElementById('sim-criar')?.addEventListener('click', async () => {
+      const titulo = InputSanitizer.texto(document.getElementById('sim-titulo')?.value, { max: 200, obrigatorio: true });
+      const duracao = InputSanitizer.inteiro(document.getElementById('sim-duracao')?.value, { min: 10, max: 240, fallback: 60 }) * 60;
+      const totalQ = InputSanitizer.inteiro(document.getElementById('sim-total-q')?.value, { min: 5, max: 120, fallback: 30 });
+      const dist = document.getElementById('sim-distribuicao')?.value ?? 'proporcional';
+
+      const questoes = await Simulados.gerarQuestoes(concurso.id, { totalQuestoes: totalQ, distribuicao: dist });
+      if (!questoes || questoes.length === 0) { Toast.aviso('Cadastre questões primeiro ou adicione disciplinas.'); return; }
+
+      try {
+        const id = await Simulados.criar(concurso.id, titulo, duracao, questoes);
+        Toast.sucesso('Simulado criado!');
+        Router.ir('simulados');
+      } catch (e) { Toast.erro(e?.message ?? 'Erro ao criar simulado.'); }
+    });
+  }
+
+  renderTab('lista');
+  document.querySelectorAll('.tabs .tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tabs .tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      renderTab(t.dataset.tab);
+    });
+  });
+};
+
 /* ===== CONFIGURAÇÕES ===== */
 Paginas.configuracoes = async function(main) {
   const concurso = await Concursos.ativo();
@@ -1579,6 +2230,29 @@ Paginas.configuracoes = async function(main) {
       <div class="form-group"><label>Nome</label><input type="text" id="cfg-nome" maxlength="100" value="${escapeHtml(concurso.nome)}" /></div>
       <div class="form-group"><label>Data da prova</label><input type="date" id="cfg-data" value="${concurso.dataProva ? new Date(concurso.dataProva).toISOString().split('T')[0] : ''}" /></div>
       <div class="form-group"><label>Horas diárias disponíveis</label><input type="number" id="cfg-horas" min="1" max="18" value="${concurso.horasDiarias ?? 4}" /></div>
+      <div class="form-group">
+        <label>Dias de estudo na semana</label>
+        <div id="cfg-dias-estudo" style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${[
+            { valor: 1, label: 'Seg' },
+            { valor: 2, label: 'Ter' },
+            { valor: 3, label: 'Qua' },
+            { valor: 4, label: 'Qui' },
+            { valor: 5, label: 'Sex' },
+            { valor: 6, label: 'Sáb' },
+            { valor: 0, label: 'Dom' }
+          ].map(d => {
+            const diasAtuais = Array.isArray(concurso.diasEstudoSemana) && concurso.diasEstudoSemana.length > 0
+              ? concurso.diasEstudoSemana : [1, 2, 3, 4, 5, 6];
+            const marcado = diasAtuais.includes(d.valor);
+            return `<label style="display:flex;align-items:center;gap:4px;padding:8px 12px;border-radius:var(--radius-sm);background:var(--highlight);cursor:pointer;font-size:13px;font-weight:500;border:1px solid ${marcado ? 'var(--accent)' : 'var(--border)'};">
+              <input type="checkbox" class="cfg-dia-check" value="${d.valor}" ${marcado ? 'checked' : ''} style="accent-color:var(--accent);" />
+              ${d.label}
+            </label>`;
+          }).join('')}
+        </div>
+        <div class="text-dim" style="margin-top:6px;">Meta semanal = horas/dia × dias marcados</div>
+      </div>
       <div class="form-group"><label>Total de questões da prova</label><input type="number" id="cfg-total-questoes" min="1" max="5000" value="${concurso.totalQuestoes ?? ''}" placeholder="Ex: 120" /></div>
       <button class="btn btn-primary btn-sm" id="btn-salvar-concurso">Salvar concurso</button>
       ` : `<button class="btn btn-primary" id="btn-criar-concurso">Criar concurso</button>`}
@@ -1599,6 +2273,20 @@ Paginas.configuracoes = async function(main) {
       </div>
       <div id="backup-progresso" class="text-dim" style="margin-top:8px;display:none;">Progresso: <span id="backup-progresso-val">0%</span></div>
       <input type="file" id="input-importar" accept=".json" style="display:none;" />
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Notificações</div>
+      <div class="row">
+        <span>Lembrar revisões pendentes</span>
+        <div class="toggle-switch ${Notificacoes.prefs().revisoes ? 'active' : ''}" id="notif-revisoes-toggle"></div>
+      </div>
+      <div class="row">
+        <span>Alerta de meta semanal</span>
+        <div class="toggle-switch ${Notificacoes.prefs().meta ? 'active' : ''}" id="notif-meta-toggle"></div>
+      </div>
+      <button class="btn btn-sm btn-secondary mt-12" id="btn-testar-notif">Testar notificação</button>
+      <button class="btn btn-sm btn-secondary mt-12" id="btn-pedir-permissao">Solicitar permissão</button>
     </div>
 
     <div class="settings-section">
@@ -1659,7 +2347,8 @@ Paginas.configuracoes = async function(main) {
         nome: InputSanitizer.texto(document.getElementById('cfg-nome')?.value, { max: 100, obrigatorio: true }),
         dataProva: document.getElementById('cfg-data')?.value ? new Date(document.getElementById('cfg-data').value + 'T04:00:00Z').toISOString() : null,
         horasDiarias: InputSanitizer.inteiro(document.getElementById('cfg-horas')?.value, { min: 1, max: 18, fallback: 4 }),
-        totalQuestoes: document.getElementById('cfg-total-questoes')?.value ? InputSanitizer.inteiro(document.getElementById('cfg-total-questoes')?.value, { min: 1, max: 5000, fallback: null }) : null
+        totalQuestoes: document.getElementById('cfg-total-questoes')?.value ? InputSanitizer.inteiro(document.getElementById('cfg-total-questoes')?.value, { min: 1, max: 5000, fallback: null }) : null,
+        diasEstudoSemana: [...document.querySelectorAll('.cfg-dia-check:checked')].map(cb => parseInt(cb.value, 10))
       });
       Toast.sucesso('Concurso salvo!');
     } catch (e) { Toast.erro(e?.message ?? 'Erro ao salvar.'); }
@@ -1744,6 +2433,34 @@ Paginas.configuracoes = async function(main) {
     }
   });
 
+  // Notificações event listeners
+  document.getElementById('notif-revisoes-toggle')?.addEventListener('click', () => {
+    const el = document.getElementById('notif-revisoes-toggle');
+    const ativo = el.classList.toggle('active');
+    Notificacoes.alternarRevisoes(ativo);
+  });
+  document.getElementById('notif-meta-toggle')?.addEventListener('click', () => {
+    const el = document.getElementById('notif-meta-toggle');
+    const ativo = el.classList.toggle('active');
+    Notificacoes.alternarMeta(ativo);
+  });
+  document.getElementById('btn-testar-notif')?.addEventListener('click', async () => {
+    const status = await Notificacoes.pedirPermissao();
+    if (status === 'granted') {
+      new Notification('MentorConcursos', { body: 'Notificações funcionando! ✅', icon: 'icons/icon-192.png' });
+      Toast.sucesso('Notificação enviada!');
+    } else if (status === 'denied') {
+      Toast.aviso('Permissão negada. Habilite nas configurações do navegador.');
+    } else {
+      Toast.aviso('Permissão pendente.');
+    }
+  });
+  document.getElementById('btn-pedir-permissao')?.addEventListener('click', async () => {
+    const status = await Notificacoes.pedirPermissao();
+    if (status === 'granted') Toast.sucesso('Permissão concedida!');
+    else Toast.aviso('Permissão não concedida.');
+  });
+
   document.getElementById('btn-limpar-dados')?.addEventListener('click', () => {
     Modal.abrir(`
       <div class="modal-title">⚠️ Limpar todos os dados</div>
@@ -1785,7 +2502,7 @@ async function abrirModalSetupConcurso() {
       const dataVal = document.getElementById('setup-data')?.value;
       const horas = InputSanitizer.inteiro(document.getElementById('setup-horas')?.value, { min: 1, max: 18, fallback: 6 });
       const totalQ = document.getElementById('setup-total-q')?.value ? InputSanitizer.inteiro(document.getElementById('setup-total-q')?.value, { min: 1, max: 5000, fallback: null }) : null;
-      await Concursos.criar({ nome, dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null, horasDiarias: horas, totalQuestoes: totalQ });
+      await Concursos.criar({ nome, dataProva: dataVal ? new Date(dataVal + 'T04:00:00Z').toISOString() : null, horasDiarias: horas, totalQuestoes: totalQ, diasEstudoSemana: [1, 2, 3, 4, 5, 6] });
       Modal.fechar();
       Toast.sucesso('Concurso criado!');
       const nav = document.getElementById('bottom-nav');
@@ -1940,7 +2657,10 @@ async function abrirModalFinalizar(dados) {
 
       if (dados.tipo?.startsWith('Revisão')) {
         const rev = await Revisoes.encontrarRevisaoCorrespondente(dados.disciplinaId, dados.topico, dados.tipo);
-        if (rev) await Revisoes.marcarFeita(rev.id);
+        if (rev) {
+          // Agendar abertura do modal SM-2 após fechar o modal de finalizar
+          setTimeout(() => abrirModalNotaSM2(rev.id, dados), 300);
+        }
       }
 
       const concurso = await Concursos.ativo();
@@ -1951,6 +2671,11 @@ async function abrirModalFinalizar(dados) {
 
       Modal.fechar(); Timer.resetar(); atualizarTituloTimer();
       Toast.sucesso('Sessão registrada!');
+      // Verificar conquistas após salvar sessão
+      try {
+        const novas = await Conquistas.verificar();
+        novas.forEach(c => mostrarConquista(c));
+      } catch (e) { console.warn('Conquistas:', e); }
       Router.ir('dashboard');
     } catch (e) {
       Toast.erro(e?.message ?? 'Erro ao salvar sessão.');
@@ -1958,6 +2683,302 @@ async function abrirModalFinalizar(dados) {
   });
 }
 window.abrirModalFinalizar = abrirModalFinalizar;
+
+/* ============ Modal: Simulado em Andamento ============ */
+async function abrirSimuladoEmAndamento(sim, concursoId, disciplinas) {
+  const mapaDisc = {};
+  for (const d of disciplinas) mapaDisc[d.id] = d;
+  let idxAtual = 0;
+  const total = sim.respostas?.length ?? 0;
+  if (total === 0) { Toast.erro('Simulado sem questões.'); return; }
+
+  // Timer regressivo para o simulado
+  let tempoRestante = sim.duracaoLimite ?? 3600;
+  let timerSimIntervalo = null;
+  let tempoInicioQuestao = Date.now();
+  let respondidas = 0;
+
+  function tempoFormatado(seg) { return `${String(Math.floor(seg / 60)).padStart(2, '0')}:${String(seg % 60).padStart(2, '0')}`; }
+
+  Modal.abrir(`
+    <div class="modal-title">${escapeHtml(sim.titulo ?? 'Simulado')}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="text-dim" id="sim-contador-tempo">⏱️ ${tempoFormatado(tempoRestante)}</div>
+      <div class="text-dim" id="sim-progresso">Questão ${idxAtual + 1} de ${total}</div>
+    </div>
+    <div style="margin-bottom:12px;display:flex;gap:4px;flex-wrap:wrap;" id="sim-grid-numeros"></div>
+    <div id="sim-questao-conteudo"></div>
+    <div class="modal-actions" style="justify-content:space-between;margin-top:16px;">
+      <button class="btn btn-sm btn-secondary" id="sim-anterior" ${idxAtual === 0 ? 'disabled' : ''}>← Anterior</button>
+      <button class="btn btn-sm btn-primary" id="sim-proximo">Próxima →</button>
+    </div>
+    <div class="modal-actions" style="margin-top:8px;">
+      <button class="btn btn-danger btn-sm" id="sim-cancelar">Cancelar</button>
+      <button class="btn btn-primary btn-sm" id="sim-finalizar">Finalizar Simulado</button>
+    </div>
+  `, { fecharNoFundo: false });
+
+  function renderGrid() {
+    const grid = document.getElementById('sim-grid-numeros');
+    if (!grid) return;
+    grid.innerHTML = sim.respostas.map((r, i) => {
+      let cls = 'sim-num-pendente';
+      if (r?.respostaDada !== null && r?.respostaDada !== undefined) cls = 'sim-num-respondida';
+      return `<span class="sim-num ${cls}" data-idx="${i}" style="display:inline-block;width:28px;height:28px;text-align:center;line-height:28px;border-radius:50%;font-size:12px;cursor:pointer;background:${cls === 'sim-num-respondida' ? 'var(--accent)' : 'var(--highlight)'};color:${cls === 'sim-num-respondida' ? '#fff' : 'var(--text-dim)'};">${i + 1}</span>`;
+    }).join('');
+    grid.querySelectorAll('.sim-num').forEach(el => {
+      el.addEventListener('click', () => {
+        idxAtual = parseInt(el.dataset.idx);
+        renderQuestao();
+      });
+    });
+  }
+
+  function renderQuestao() {
+    const cont = document.getElementById('sim-questao-conteudo');
+    const prog = document.getElementById('sim-progresso');
+    const ant = document.getElementById('sim-anterior');
+    const prox = document.getElementById('sim-proximo');
+    if (!cont) return;
+    const q = sim.respostas[idxAtual];
+    if (!q) return;
+    if (prog) prog.textContent = `Questão ${idxAtual + 1} de ${total}`;
+    if (ant) ant.disabled = idxAtual === 0;
+    if (prox) prox.textContent = idxAtual === total - 1 ? 'Finalizar' : 'Próxima →';
+
+    const disc = mapaDisc[q.disciplinaId];
+    const respDada = q.respostaDada;
+
+    cont.innerHTML = `
+      <div class="text-dim" style="font-size:11px;margin-bottom:4px;">
+        <span class="color-dot" style="background-color:${escapeHtml(disc?.cor ?? '#e94560')};display:inline-block;vertical-align:middle;"></span>
+        ${escapeHtml(disc?.nome ?? 'Disciplina')}
+      </div>
+      <div style="font-weight:600;margin-bottom:12px;">${escapeHtml(q.enunciado || `Questão ${idxAtual + 1}`)}</div>
+      ${(q.alternativas ?? []).length > 0 ? q.alternativas.map((alt, i) => `
+        <div class="sim-alternativa ${respDada === i ? 'selecionada' : ''}" data-alt="${i}" style="padding:10px;margin-bottom:6px;border-radius:var(--radius-sm);background:${respDada === i ? 'var(--accent)' : 'var(--highlight)'};cursor:pointer;color:${respDada === i ? '#fff' : 'var(--text)'};">
+          ${String.fromCharCode(65 + i)}) ${escapeHtml(alt)}
+        </div>`).join('') : '<div class="text-dim">Sem alternativas cadastradas. Use os botões abaixo para responder.</div>'}
+      ${q.alternativas && q.alternativas.length === 0 ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+          ${[0,1,2,3,4].map(i => `<button class="pill ${respDada === i ? 'active' : ''}" data-alt-sim="${i}" style="min-width:40px;">${String.fromCharCode(65 + i)}</button>`).join('')}
+        </div>` : ''}
+    `;
+
+    // Event listeners para alternativas
+    cont.querySelectorAll('.sim-alternativa').forEach(el => {
+      el.addEventListener('click', async () => {
+        const altIdx = parseInt(el.dataset.alt);
+        const tempoGasto = Math.floor((Date.now() - tempoInicioQuestao) / 1000);
+        await Simulados.responder(sim.id, idxAtual, altIdx, tempoGasto);
+        sim.respostas[idxAtual].respostaDada = altIdx;
+        tempoInicioQuestao = Date.now();
+        renderQuestao();
+        renderGrid();
+      });
+    });
+    cont.querySelectorAll('[data-alt-sim]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const altIdx = parseInt(el.dataset['alt-sim']);
+        const tempoGasto = Math.floor((Date.now() - tempoInicioQuestao) / 1000);
+        await Simulados.responder(sim.id, idxAtual, altIdx, tempoGasto);
+        sim.respostas[idxAtual].respostaDada = altIdx;
+        tempoInicioQuestao = Date.now();
+        renderQuestao();
+        renderGrid();
+      });
+    });
+  }
+
+  renderQuestao();
+  renderGrid();
+
+  // Timer regressivo
+  timerSimIntervalo = setInterval(() => {
+    tempoRestante--;
+    const el = document.getElementById('sim-contador-tempo');
+    if (el) el.textContent = `⏱️ ${tempoFormatado(Math.max(0, tempoRestante))}`;
+    if (tempoRestante <= 0) {
+      clearInterval(timerSimIntervalo);
+      Toast.aviso('Tempo esgotado!');
+      Modal.fechar();
+      Simulados.finalizar(sim.id).then(() => {
+        Conquistas.verificar().then(novas => {
+          novas.forEach(c => mostrarConquista(c));
+        });
+        Router.ir('simulados');
+      });
+    }
+  }, 1000);
+
+  document.getElementById('sim-anterior')?.addEventListener('click', () => {
+    if (idxAtual > 0) { idxAtual--; renderQuestao(); }
+  });
+  document.getElementById('sim-proximo')?.addEventListener('click', async () => {
+    if (idxAtual < total - 1) { idxAtual++; renderQuestao(); }
+    else {
+      clearInterval(timerSimIntervalo);
+      Modal.fechar();
+      try {
+        await Simulados.finalizar(sim.id);
+        const novas = await Conquistas.verificar();
+        novas.forEach(c => mostrarConquista(c));
+        Toast.sucesso('Simulado finalizado!');
+        Router.ir('simulados');
+      } catch (e) { Toast.erro(e?.message ?? 'Erro ao finalizar.'); }
+    }
+  });
+  document.getElementById('sim-cancelar')?.addEventListener('click', async () => {
+    clearInterval(timerSimIntervalo);
+    Modal.fechar();
+    await Simulados.cancelar(sim.id);
+    Toast.aviso('Simulado cancelado.');
+    Router.ir('simulados');
+  });
+  document.getElementById('sim-finalizar')?.addEventListener('click', async () => {
+    clearInterval(timerSimIntervalo);
+    Modal.fechar();
+    try {
+      await Simulados.finalizar(sim.id);
+      const novas = await Conquistas.verificar();
+      novas.forEach(c => mostrarConquista(c));
+      Toast.sucesso('Simulado finalizado!');
+      Router.ir('simulados');
+    } catch (e) { Toast.erro(e?.message ?? 'Erro ao finalizar.'); }
+  });
+}
+window.abrirSimuladoEmAndamento = abrirSimuladoEmAndamento;
+
+/* ============ Modal: Resultado Simulado ============ */
+async function abrirResultadoSimulado(sim, disciplinas) {
+  const mapaDisc = {};
+  for (const d of disciplinas) mapaDisc[d.id] = d;
+  const res = sim.resultado;
+  if (!res) return;
+
+  let html = `
+    <div class="modal-title">📊 Resultado</div>
+    <div class="modal-text"><strong>${escapeHtml(sim.titulo ?? 'Simulado')}</strong></div>
+    <div class="card-grid" style="margin-bottom:12px;">
+      <div class="card" style="text-align:center;"><div class="card-value" style="color:${res.nota >= 70 ? 'var(--success)' : res.nota >= 50 ? 'var(--warning)' : 'var(--danger)'};">${res.nota}%</div><div class="card-title">Nota</div></div>
+      <div class="card" style="text-align:center;"><div class="card-value" style="color:var(--success);">${res.acertos}</div><div class="card-title">Acertos</div></div>
+      <div class="card" style="text-align:center;"><div class="card-value" style="color:var(--danger);">${res.erros}</div><div class="card-title">Erros</div></div>
+      <div class="card" style="text-align:center;"><div class="card-value">${TempoUtil.formatarHhMm(res.tempo)}</div><div class="card-title">Tempo</div></div>
+    </div>`;
+
+  if (res.porDisciplina && Object.keys(res.porDisciplina).length > 0) {
+    html += `<div class="card-title">Por disciplina</div>`;
+    for (const [did, stats] of Object.entries(res.porDisciplina)) {
+      const d = mapaDisc[parseInt(did)];
+      const taxa = stats.total > 0 ? Math.round((stats.acertos / stats.total) * 100) : 0;
+      html += `<div class="acomp-disc-item">
+        <div class="acomp-disc-header">
+          <span class="color-dot" style="background-color:${escapeHtml(d?.cor ?? '#e94560')}"></span>
+          <strong>${escapeHtml(d?.nome ?? 'Disciplina')}</strong>
+          <span style="font-size:12px;color:${taxa >= 70 ? 'var(--success)' : taxa >= 50 ? 'var(--warning)' : 'var(--danger)'};">${taxa}%</span>
+        </div>
+        <div class="text-dim" style="font-size:11px;">${stats.acertos} acertos, ${stats.erros} erros, ${stats.total} questões</div>
+      </div>`;
+    }
+  }
+
+  html += `
+    <div class="card-title" style="margin-top:12px;">Gabarito</div>
+    <div style="max-height:300px;overflow-y:auto;">
+    ${sim.respostas.map((r, i) => {
+      const acertou = r.respostaDada !== null && r.respostaDada === r.respostaCorreta;
+      const errou = r.respostaDada !== null && r.respostaDada !== r.respostaCorreta;
+      const semResp = r.respostaDada === null;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="font-weight:600;min-width:24px;">${i + 1}.</span>
+        <span style="font-size:14px;">${acertou ? '✅' : errou ? '❌' : '⬜'}</span>
+        <span style="flex:1;">${escapeHtml((r.enunciado || `Questão ${i + 1}`).substring(0, 60))}${(r.enunciado || '').length > 60 ? '...' : ''}</span>
+        <span style="font-size:11px;">${semResp ? 'Sem resposta' : `Sua: ${String.fromCharCode(65 + (r.respostaDada ?? 0))} · Gab: ${String.fromCharCode(65 + (r.respostaCorreta ?? 0))}`}</span>
+      </div>`;
+    }).join('')}
+    </div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="Modal.fechar()">Fechar</button></div>`;
+
+  Modal.abrir(html);
+}
+window.abrirResultadoSimulado = abrirResultadoSimulado;
+
+/* ============ Modal: Nota SM-2 para Revisão ============ */
+async function abrirModalNotaSM2(revisaoId, dadosSessao) {
+  return new Promise((resolve) => {
+    Modal.abrir(`
+      <div class="modal-title">📝 Avaliar Revisão</div>
+      <div class="modal-text">Como foi a revisão de <strong>${escapeHtml(dadosSessao?.topico ?? '')}</strong>?</div>
+      <div class="modal-text text-dim" style="font-size:12px;">
+        0 = Não lembrei nada · 1 = Errei tudo · 2 = Errei muito<br/>
+        3 = Lembrei com dificuldade · 4 = Lembrei com pequeno erro · 5 = Perfeito
+      </div>
+      <div class="pill-group" id="pills-nota-sm2" style="justify-content:center;margin:16px 0;">
+        ${[0,1,2,3,4,5].map(n => `<button class="pill${n >= 3 ? '' : ' pill-danger'}" data-nota="${n}" style="min-width:44px;font-size:16px;font-weight:600;">${n}</button>`).join('')}
+      </div>
+      <div id="sm2-preview" class="text-dim text-center" style="min-height:20px;margin-bottom:12px;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="sm2-pular">Pular (sem SM-2)</button>
+        <button class="btn btn-primary" id="sm2-salvar" disabled>Salvar nota</button>
+      </div>
+    `, { fecharNoFundo: false });
+
+    let notaSelecionada = null;
+
+    document.querySelectorAll('#pills-nota-sm2 .pill').forEach(pill => {
+      pill.addEventListener('click', async () => {
+        document.querySelectorAll('#pills-nota-sm2 .pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        notaSelecionada = parseInt(pill.dataset.nota, 10);
+        document.getElementById('sm2-salvar').disabled = false;
+
+        // Preview do resultado SM-2
+        try {
+          const revisao = await db.revisoes.get(revisaoId);
+          if (revisao) {
+            const preview = Revisoes.calcularSM2(
+              notaSelecionada,
+              revisao.fatorFacilidade ?? 2.5,
+              revisao.repeticoes ?? 0,
+              revisao.intervaloAtual ?? 1
+            );
+            const previewEl = document.getElementById('sm2-preview');
+            if (previewEl) {
+              previewEl.innerHTML = notaSelecionada < 3
+                ? `⚠️ Nota baixa → revisão será reagendada em <strong>${preview.novoIntervalo} dia(s)</strong> (reinício)`
+                : `✅ Próxima revisão em <strong>${preview.novoIntervalo} dia(s)</strong> · EF: ${preview.novoFator.toFixed(2)}`;
+            }
+          }
+        } catch {}
+      });
+    });
+
+    document.getElementById('sm2-pular')?.addEventListener('click', async () => {
+      // Marcar feita sem SM-2 (comportamento legado)
+      try { await Revisoes.marcarFeita(revisaoId, null); } catch (e) { console.warn(e); }
+      Modal.fechar();
+      resolve({ usouSM2: false });
+    });
+
+    document.getElementById('sm2-salvar')?.addEventListener('click', async () => {
+      if (notaSelecionada === null) return;
+      try {
+        const resultado = await Revisoes.marcarFeita(revisaoId, notaSelecionada);
+        Modal.fechar();
+        if (notaSelecionada < 3) {
+          Toast.aviso(`Revisão reagendada em ${resultado.novoIntervalo} dia(s). Continue praticando!`);
+        } else {
+          Toast.sucesso(`Próxima revisão em ${resultado.novoIntervalo} dia(s) · EF: ${resultado.novoFator.toFixed(2)}`);
+        }
+        resolve({ usouSM2: true, resultado });
+      } catch (e) {
+        Toast.erro(e?.message ?? 'Erro ao salvar nota SM-2');
+        resolve({ usouSM2: false });
+      }
+    });
+  });
+}
+window.abrirModalNotaSM2 = abrirModalNotaSM2;
 
 /* ============ Inicialização ============ */
 document.addEventListener('DOMContentLoaded', async () => {

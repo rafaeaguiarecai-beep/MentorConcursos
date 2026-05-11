@@ -1137,6 +1137,132 @@ label {
   color: var(--text-dim);
 }
 
+/* ===== Sprint 3: Conquistas ===== */
+.conquista-toast {
+  background-color: #3d2e00;
+  border-left: 4px solid #FFD700;
+  font-size: 14px;
+  animation: slideDown 0.3s ease, slideInRight 0.4s ease;
+}
+
+.conquistas-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 600px) {
+  .conquistas-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.conquista-card {
+  background-color: var(--card);
+  border-radius: var(--radius);
+  padding: 14px 10px;
+  text-align: center;
+  box-shadow: var(--shadow);
+  transition: transform 0.2s;
+}
+
+.conquista-card.bloqueada {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.conquista-card-icone {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.conquista-card-nome {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.conquista-card-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.conquista-card-data {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.conquista-progresso {
+  margin-bottom: 4px;
+}
+
+/* ===== Sprint 3: Streak ===== */
+.streak-card {
+  border-left: 4px solid #f97316;
+}
+
+.streak-numero {
+  font-size: 36px;
+  font-weight: 700;
+  color: #f97316;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.streak-calendario-grid {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.streak-dia {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--highlight);
+  transition: background-color 0.2s;
+}
+
+.streak-dia.ativo {
+  background-color: var(--accent);
+}
+
+.streak-dia.hoje {
+  box-shadow: 0 0 0 2px var(--accent);
+  border: 2px solid var(--bg);
+}
+
+/* ===== Sprint 3: Pomodoro ===== */
+.pomodoro-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.pomodoro-toggle .toggle-switch {
+  width: 42px;
+  height: 24px;
+}
+
+.pomodoro-info {
+  text-align: center;
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.pomodoro-ciclo {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background-color: var(--highlight);
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ===== v3: Meta Semanal e Acompanhamento ===== */
 .meta-semanal-card { border-left: 4px solid var(--accent); }
 

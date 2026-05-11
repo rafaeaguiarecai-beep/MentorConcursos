@@ -12,6 +12,13 @@ const Timer = {
   audioCtx: null,
   callbacks: {},
 
+  // Pomodoro
+  modo: 'livre', // 'livre' | 'pomodoro'
+  pomodoroConfig: { trabalho: 25 * 60, pausaCurta: 5 * 60, pausaLonga: 15 * 60, ciclos: 4 },
+  pomodoroCicloAtual: 0,
+  pomodoroTipo: 'trabalho', // 'trabalho' | 'pausaCurta' | 'pausaLonga'
+  pomodoroFimNotificado: false,
+
   iniciadoEm: null,
   iniciadoEmMs: null,
   pausadoEmMs: null,
