@@ -25,6 +25,23 @@ const FRASES_MOTIVACIONAIS = [
 
 const CORES_PADRAO = ['#e94560','#60B5FF','#FF9149','#FF9898','#FF90BB','#80D8C3','#A19AD3','#72BF78','#fbbf24','#4ade80'];
 
+/* ============ Resumo do Dia ============ */
+function gerarFraseResumoHoje(resumo, streak) {
+  if (!resumo || resumo.totalSegundos === 0) {
+    return 'Hoje ainda não há sessões registradas. Que tal começar agora?';
+  }
+  const horas = Math.floor(resumo.totalSegundos / 3600);
+  const mins = Math.floor((resumo.totalSegundos % 3600) / 60);
+  const tempoStr = horas > 0 ? `${horas}h ${mins}min` : `${mins}min`;
+
+  if (resumo.totalSessoes === 1) return `Primeira sessão do dia! ${tempoStr} de estudo.`;
+  if (resumo.disciplinasCount === 1) return `${resumo.totalSessoes} sessões hoje · ${tempoStr} em 1 disciplina.`;
+  if (streak && streak.atual >= 7) return `🔥 Streak de ${streak.atual} dias! Hoje: ${tempoStr} em ${resumo.disciplinasCount} matérias.`;
+  if (resumo.disciplinasCount >= 3) return `Hoje você estudou ${tempoStr} em ${resumo.disciplinasCount} matérias. Estudo balanceado!`;
+  return `Hoje: ${tempoStr} em ${resumo.disciplinasCount} matérias. Continue firme!`;
+}
+window.gerarFraseResumoHoje = gerarFraseResumoHoje;
+
 /* ============ Toast ============ */
 const Toast = {
   mostrar(mensagem, tipo = 'info', duracao = 3000) {
@@ -664,6 +681,29 @@ const Paginas = {
         <p class="page-subtitle">${escapeHtml(concurso.nome)}</p>
       </div>
 
+      <div class="card card-resumo-hoje" id="card-resumo-hoje">
+        <div class="card-title">📅 Hoje</div>
+        <div class="resumo-hoje-grid">
+          <div class="resumo-hoje-item">
+            <div class="resumo-hoje-valor" id="rh-tempo">--</div>
+            <div class="resumo-hoje-label">Tempo</div>
+          </div>
+          <div class="resumo-hoje-item">
+            <div class="resumo-hoje-valor" id="rh-sessoes">--</div>
+            <div class="resumo-hoje-label">Sessões</div>
+          </div>
+          <div class="resumo-hoje-item">
+            <div class="resumo-hoje-valor" id="rh-disciplinas">--</div>
+            <div class="resumo-hoje-label">Matérias</div>
+          </div>
+          <div class="resumo-hoje-item">
+            <div class="resumo-hoje-valor" id="rh-streak">--</div>
+            <div class="resumo-hoje-label">Sequência</div>
+          </div>
+        </div>
+        <div class="resumo-hoje-frase" id="rh-frase">Carregando...</div>
+      </div>
+
       ${!hojeEhDiaEstudo ? `
       <div class="banner" style="background-color:var(--card);border-left:4px solid var(--success);">
         <div class="banner-icon">😌</div>
@@ -884,6 +924,24 @@ const Paginas = {
       if (Router.paginaAtual === 'dashboard') atualizarCountdown();
       else clearInterval(window.__countdownInt);
     }, 1000);
+
+    // Resumo do Dia
+    setTimeout(async () => {
+      try {
+        const resumo = await Sessoes.resumoHoje(concurso.id);
+        const streak = await Streak.calcular(concurso.id);
+        const elTempo = document.getElementById('rh-tempo');
+        const elSessoes = document.getElementById('rh-sessoes');
+        const elDisc = document.getElementById('rh-disciplinas');
+        const elStreak = document.getElementById('rh-streak');
+        const elFrase = document.getElementById('rh-frase');
+        if (elTempo) elTempo.textContent = TempoUtil.formatarHhMm(resumo.totalSegundos);
+        if (elSessoes) elSessoes.textContent = resumo.totalSessoes;
+        if (elDisc) elDisc.textContent = resumo.disciplinasCount;
+        if (elStreak) elStreak.textContent = streak?.atual ?? 0;
+        if (elFrase) elFrase.textContent = gerarFraseResumoHoje(resumo, streak);
+      } catch (e) { console.warn('Resumo hoje:', e); }
+    }, 50);
 
     // Streak + Conquista mini-cards
     setTimeout(async () => {
@@ -2476,6 +2534,7 @@ Paginas.configuracoes = async function(main) {
       try {
         await db.concursos.clear(); await db.disciplinas.clear(); await db.topicos.clear();
         await db.sessoes.clear(); await db.revisoes.clear(); await db.cicloConfig.clear(); await db.questoes.clear();
+        await db.conquistas.clear(); await db.simulados.clear();
         Modal.fechar(); Toast.sucesso('Dados limpos!'); Router.ir('dashboard');
       } catch { Toast.erro('Erro ao limpar dados.'); }
     });
@@ -2655,12 +2714,10 @@ async function abrirModalFinalizar(dados) {
         await Revisoes.criarParaSessao({ id: sessaoId, disciplinaId: dados.disciplinaId, topico: dados.topico, tipo: 'Novo', data: dados.iniciadoEm ?? new Date().toISOString() });
       }
 
+      let revIdSM2 = null;
       if (dados.tipo?.startsWith('Revisão')) {
         const rev = await Revisoes.encontrarRevisaoCorrespondente(dados.disciplinaId, dados.topico, dados.tipo);
-        if (rev) {
-          // Agendar abertura do modal SM-2 após fechar o modal de finalizar
-          setTimeout(() => abrirModalNotaSM2(rev.id, dados), 300);
-        }
+        if (rev) revIdSM2 = rev.id;
       }
 
       const concurso = await Concursos.ativo();
@@ -2669,14 +2726,67 @@ async function abrirModalFinalizar(dados) {
         limparRascunhoSessaoEstudo(concurso.id);
       }
 
-      Modal.fechar(); Timer.resetar(); atualizarTituloTimer();
+      // Resumo do dia pós-sessão
+      const resumoHoje = await Sessoes.resumoHoje(concurso.id);
+      const streakHoje = await Streak.calcular(concurso.id);
+      const allDisc = await Disciplinas.listar(concurso.id);
+      const mapaDisc = {};
+      for (const d of allDisc) mapaDisc[d.id] = d;
+      const nomesDisc = [];
+      for (const id of resumoHoje.disciplinasIds) { if (mapaDisc[id]) nomesDisc.push(mapaDisc[id].nome); }
+      const frasePos = gerarFraseResumoHoje(resumoHoje, streakHoje);
+      const tempoHojeStr = TempoUtil.formatarHhMm(resumoHoje.totalSegundos);
+
+      Modal.abrir(`
+        <div class="modal-title">🎉 Sessão salva!</div>
+        <div class="banner-pos-sessao">
+          <div class="banner-pos-sessao-titulo">Resumo do seu dia</div>
+          <div class="banner-pos-sessao-stats">
+            <div class="resumo-hoje-item">
+              <div class="resumo-hoje-valor">${tempoHojeStr}</div>
+              <div class="resumo-hoje-label">Tempo total</div>
+            </div>
+            <div class="resumo-hoje-item">
+              <div class="resumo-hoje-valor">${resumoHoje.totalSessoes}</div>
+              <div class="resumo-hoje-label">Sessões</div>
+            </div>
+            <div class="resumo-hoje-item">
+              <div class="resumo-hoje-valor">${resumoHoje.disciplinasCount}</div>
+              <div class="resumo-hoje-label">Matérias</div>
+            </div>
+            <div class="resumo-hoje-item">
+              <div class="resumo-hoje-valor">${streakHoje?.atual ?? 0}</div>
+              <div class="resumo-hoje-label">Sequência</div>
+            </div>
+          </div>
+          ${nomesDisc.length > 0 ? `<div class="banner-pos-sessao-disciplinas">📚 ${escapeHtml(nomesDisc.join(', '))}</div>` : ''}
+          <div class="resumo-hoje-frase" style="margin-top:8px;">${escapeHtml(frasePos)}</div>
+        </div>
+        <div class="modal-actions">
+          ${revIdSM2 ? `<button class="btn btn-warning" id="btn-pos-sm2" style="background:var(--warning);color:#1a1a2e;">📝 Avaliar Revisão</button>` : ''}
+          <button class="btn btn-secondary" id="btn-pos-dashboard">Ir para Dashboard</button>
+          <button class="btn btn-primary" id="btn-pos-novasessao">Nova Sessão</button>
+        </div>
+      `, { fecharNoFundo: false });
+
+      Timer.resetar(); atualizarTituloTimer();
       Toast.sucesso('Sessão registrada!');
-      // Verificar conquistas após salvar sessão
       try {
         const novas = await Conquistas.verificar();
         novas.forEach(c => mostrarConquista(c));
       } catch (e) { console.warn('Conquistas:', e); }
-      Router.ir('dashboard');
+
+      document.getElementById('btn-pos-dashboard')?.addEventListener('click', () => {
+        Modal.fechar();
+        Router.ir('dashboard');
+      });
+      document.getElementById('btn-pos-novasessao')?.addEventListener('click', () => {
+        Modal.fechar();
+        Router.ir('estudar');
+      });
+      document.getElementById('btn-pos-sm2')?.addEventListener('click', async () => {
+        await abrirModalNotaSM2(revIdSM2, dados);
+      });
     } catch (e) {
       Toast.erro(e?.message ?? 'Erro ao salvar sessão.');
     }

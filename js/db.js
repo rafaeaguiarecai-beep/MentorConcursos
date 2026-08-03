@@ -434,6 +434,28 @@ const Sessoes = {
   },
   async criar(dados) { return db.sessoes.add(normalizarSessaoInput(dados)); },
   async remover(id) { return db.sessoes.delete(id); },
+  async resumoPorData(concursoId, dataRef) {
+    if (!concursoId) return { totalSegundos: 0, totalSessoes: 0, disciplinasCount: 0, disciplinasIds: [] };
+    const ref = dataRef ?? new Date();
+    const inicio = DataUtil.inicioDia(ref).toISOString();
+    const fim = DataUtil.fimDia(ref).toISOString();
+    const sessoes = await db.sessoes.where({ concursoId }).and(s => {
+      const d = new Date(s?.data ?? 0);
+      return d >= new Date(inicio) && d <= new Date(fim);
+    }).toArray();
+    const totalSegundos = (sessoes ?? []).reduce((acc, s) => acc + (s?.duracaoSegundos ?? 0), 0);
+    const disciplinasSet = new Set();
+    for (const s of sessoes) if (s?.disciplinaId) disciplinasSet.add(s.disciplinaId);
+    return {
+      totalSegundos,
+      totalSessoes: sessoes.length,
+      disciplinasCount: disciplinasSet.size,
+      disciplinasIds: [...disciplinasSet]
+    };
+  },
+  async resumoHoje(concursoId) {
+    return this.resumoPorData(concursoId, new Date());
+  },
   async totalHoras(concursoId) {
     const lista = await this.listar(concursoId);
     const totalSeg = (lista ?? []).reduce((acc, s) => acc + (s?.duracaoSegundos ?? 0), 0);

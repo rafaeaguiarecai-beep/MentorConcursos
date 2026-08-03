@@ -1,5 +1,5 @@
-/* ==== MentorConcursos - Service Worker v5 ==== */
-const CACHE_NAME = 'mentorconcursos-v8';
+/* ==== MentorConcursos - Service Worker v9 ==== */
+const CACHE_NAME = 'mentorconcursos-v9';
 const STATIC_CACHE = `${CACHE_NAME}-static`;
 const RUNTIME_CACHE = `${CACHE_NAME}-runtime`;
 const CDN_CACHE = `${CACHE_NAME}-cdn`;

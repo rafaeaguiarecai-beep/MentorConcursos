@@ -18,7 +18,7 @@ const Backup = {
   _compararHash(payload) {
     const hashEsperado = payload?.metadados?.hash;
     if (!hashEsperado) return true; // compatibilidade com backup legado
-    const copia = structuredClone(payload);
+    const copia = JSON.parse(JSON.stringify(payload));
     if (copia?.metadados) delete copia.metadados.hash;
     const hashAtual = this._hashConteudo(copia);
     return hashAtual === hashEsperado;
@@ -150,6 +150,12 @@ const Backup = {
         } else {
           item.notaRevisao = null;
         }
+      }
+
+      if (nomeTabela === 'topicos') {
+        item.disciplinaId = inteiro(item.disciplinaId, 'disciplinaId', { min: 1 });
+        item.nome = textoComLimite(item.nome, 'nome', 100, true);
+        item.status = textoComLimite(item.status ?? 'pendente', 'status', 50, false);
       }
 
       if (nomeTabela === 'cicloConfig') {
